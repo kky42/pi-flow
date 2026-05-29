@@ -19,7 +19,7 @@ import {
   type Model,
   type SimpleStreamOptions,
 } from "../node_modules/@earendil-works/pi-coding-agent/node_modules/@earendil-works/pi-ai/dist/index.js";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createSubagentExtension } from "../src/pi-subagent.ts";
 
 const packageRoot = dirname(dirname(fileURLToPath(import.meta.url)));
@@ -30,6 +30,7 @@ describe("pi-subagent", () => {
   let cwd: string;
   let agentDir: string;
   let registrations: Array<{ unregister: () => void }>;
+  let sessions: Array<{ dispose: () => void }>;
 
   beforeEach(() => {
     tempDir = join(tmpdir(), `pi-subagent-test-${Date.now()}-${Math.random().toString(36).slice(2)}`);
@@ -38,14 +39,31 @@ describe("pi-subagent", () => {
     mkdirSync(cwd, { recursive: true });
     mkdirSync(agentDir, { recursive: true });
     registrations = [];
+    sessions = [];
   });
 
   afterEach(() => {
+    for (const session of sessions.splice(0)) {
+      session.dispose();
+    }
     for (const registration of registrations.splice(0)) {
       registration.unregister();
     }
     rmSync(tempDir, { recursive: true, force: true });
   });
+
+  function trackSession<T extends { dispose: () => void }>(session: T): T {
+    sessions.push(session);
+    return session;
+  }
+
+  function disposeSession(session: { dispose: () => void }): void {
+    const index = sessions.indexOf(session);
+    if (index !== -1) {
+      sessions.splice(index, 1);
+    }
+    session.dispose();
+  }
 
   async function createSession(options: { maxDepth?: number; maxWidth?: number } = {}) {
     const registration = registerFauxProvider({
@@ -83,9 +101,25 @@ describe("pi-subagent", () => {
       sessionManager,
       resourceLoader,
     });
+    trackSession(session);
     await session.bindExtensions({});
 
-    return { session, registration };
+    return { session, registration, model, modelRegistry };
+  }
+
+  function makeMockTheme() {
+    const theme = new Theme({} as never, {} as never, "truecolor");
+    (theme as unknown as { fg: (color: string, text: string) => string }).fg = (_color, text) => text;
+    (theme as unknown as { bold: (text: string) => string }).bold = (text) => text;
+    return theme;
+  }
+
+  function stripAnsi(s: string) {
+    return s.replace(/\x1b\[[0-9;]*m/g, "");
+  }
+
+  function renderToText(component: { render: (width: number) => string[] }) {
+    return stripAnsi(component.render(200).join("\n"));
   }
 
   it("registers the Claude-style Agent tool contract", async () => {
@@ -107,7 +141,7 @@ describe("pi-subagent", () => {
       "Default to Agent for broad repo audits, cross-repo comparisons, independent checklist searches, and second opinions on risky migrations.",
     );
 
-    session.dispose();
+    disposeSession(session);
   });
 
   it("loads as a pi package extension from package metadata", async () => {
@@ -167,7 +201,7 @@ describe("pi-subagent", () => {
     expect(JSON.stringify(childContext?.messages)).not.toContain("Please delegate the auth search");
     expect(JSON.stringify(rootContinuationContext?.messages)).toContain("found auth.ts");
 
-    session.dispose();
+    disposeSession(session);
   });
 
   it("does not append an extra role prompt for general-purpose subagents", async () => {
@@ -192,7 +226,116 @@ describe("pi-subagent", () => {
     expect(childContext?.systemPrompt).toContain("Subagent Delegation");
     expect(JSON.stringify(childContext?.messages)).toContain("Inspect config loading.");
 
-    session.dispose();
+    disposeSession(session);
+  });
+
+  it("does not emit progress updates when no interactive UI is bound", async () => {
+    const { session, registration } = await createSession();
+    const updateEvents: unknown[] = [];
+
+    session.subscribe((event) => {
+      if (event.type === "tool_execution_update") {
+        updateEvents.push(event);
+      }
+    });
+
+    registration.setResponses([
+      fauxAssistantMessage([fauxToolCall("Agent", {
+        description: "Research config",
+        prompt: "Inspect config loading.",
+      })], { stopReason: "toolUse" }),
+      fauxAssistantMessage("config found"),
+      fauxAssistantMessage("done"),
+    ]);
+
+    await session.prompt("Delegate config research.");
+
+    expect(updateEvents).toEqual([]);
+
+    disposeSession(session);
+  });
+
+  it("does not emit compact UI progress updates in RPC mode", async () => {
+    const { session, registration, model, modelRegistry } = await createSession();
+    const tool = session.getToolDefinition("Agent") as any;
+    const updateEvents: unknown[] = [];
+    const originalArgv = process.argv.slice();
+
+    registration.setResponses([
+      fauxAssistantMessage("config found"),
+    ]);
+
+    process.argv.push("--mode", "rpc");
+    try {
+      await tool.execute(
+        "rpc-agent-call",
+        {
+          description: "Research config",
+          prompt: "Inspect config loading.",
+        },
+        undefined,
+        (result: unknown) => updateEvents.push(result),
+        {
+          hasUI: true,
+          cwd,
+          model,
+          modelRegistry,
+        },
+      );
+    } finally {
+      process.argv.splice(0, process.argv.length, ...originalArgv);
+    }
+
+    expect(updateEvents).toEqual([]);
+
+    disposeSession(session);
+  });
+
+  it("keeps same-description parallel child progress nodes separate", async () => {
+    const { session, registration, model, modelRegistry } = await createSession();
+    const tool = session.getToolDefinition("Agent") as any;
+
+    registration.setResponses([
+      fauxAssistantMessage([
+        fauxToolCall("Agent", {
+          description: "Same audit",
+          prompt: "First nested task.",
+        }),
+        fauxToolCall("Agent", {
+          description: "Same audit",
+          prompt: "Second nested task.",
+        }),
+      ], { stopReason: "toolUse" }),
+      fauxAssistantMessage("first nested done"),
+      fauxAssistantMessage("second nested done"),
+      fauxAssistantMessage("parent done"),
+    ]);
+
+    const result = await tool.execute(
+      "parent-progress",
+      {
+        description: "Parent audit",
+        prompt: "Spawn two same-description nested agents.",
+      },
+      undefined,
+      () => {},
+      {
+        hasUI: true,
+        cwd,
+        model,
+        modelRegistry,
+      },
+    );
+
+    const children = result.details.progress?.children ?? [];
+    expect(children).toHaveLength(2);
+    expect(children.map((child: { description: string }) => child.description)).toEqual([
+      "Same audit",
+      "Same audit",
+    ]);
+    expect(new Set(children.map((child: { id: string }) => child.id)).size).toBe(2);
+
+    disposeSession(session);
   });
 
   it("rejects unknown subagent names without aliases", async () => {
@@ -216,7 +359,7 @@ describe("pi-subagent", () => {
     expect(JSON.stringify(rootContinuationContext?.messages)).toContain("Unknown subagent_type");
     expect(registration.getPendingResponseCount()).toBe(0);
 
-    session.dispose();
+    disposeSession(session);
   });
 
   it("enforces maxWidth for foreground parallel Agent calls", async () => {
@@ -247,7 +390,7 @@ describe("pi-subagent", () => {
     expect(serialized).toContain("first result");
     expect(serialized).toContain("Maximum subagent width reached");
 
-    session.dispose();
+    disposeSession(session);
   });
 
   it("enforces maxDepth for nested Agent calls", async () => {
@@ -280,7 +423,7 @@ describe("pi-subagent", () => {
     expect(JSON.stringify(rootContinuationContext?.messages)).toContain("nested depth rejection observed");
     expect(registration.getPendingResponseCount()).toBe(0);
 
-    session.dispose();
+    disposeSession(session);
   });
 
   it("injects the coordinator prompt into the root agent's system prompt", async () => {
@@ -307,7 +450,7 @@ describe("pi-subagent", () => {
     expect(rootContext?.systemPrompt).toContain("TODOs, FIXMEs, skipped tests");
     expect(rootContext?.systemPrompt).toContain("User asks \"What's left before this branch can ship?\"");
 
-    session.dispose();
+    disposeSession(session);
   });
 
   it("resets per-turn child count so a new user turn gets a fresh maxWidth budget", async () => {
@@ -336,7 +479,7 @@ describe("pi-subagent", () => {
     expect(serialized).toContain("turn 2 child done");
     expect(serialized).not.toContain("Maximum subagent width reached");
 
-    session.dispose();
+    disposeSession(session);
   });
 
   it("isolates per-parent width budgets across nested subagents", async () => {
@@ -363,7 +506,7 @@ describe("pi-subagent", () => {
     expect(serialized).not.toContain("Maximum subagent width reached");
     expect(registration.getPendingResponseCount()).toBe(0);
 
-    session.dispose();
+    disposeSession(session);
   });
 
   it("rejects all delegation when maxDepth is 0", async () => {
@@ -386,7 +529,7 @@ describe("pi-subagent", () => {
     expect(JSON.stringify(rootContinuationContext?.messages)).toContain("Maximum subagent depth reached");
     expect(registration.getPendingResponseCount()).toBe(0);
 
-    session.dispose();
+    disposeSession(session);
   });
 
   it("allows nesting up to maxDepth and rejects beyond it", async () => {
@@ -419,7 +562,7 @@ describe("pi-subagent", () => {
     expect(JSON.stringify(depth2Continuation?.messages)).toContain("Maximum subagent depth reached");
     expect(registration.getPendingResponseCount()).toBe(0);
 
-    session.dispose();
+    disposeSession(session);
   });
 
   it("renders renderCall and renderResult with subagent type, description, and status", async () => {
@@ -436,27 +579,28 @@ describe("pi-subagent", () => {
     expect(captured.renderCall).toBeDefined();
     expect(captured.renderResult).toBeDefined();
 
-    const fgColors = {} as Record<string, string>;
-    const bgColors = {} as Record<string, string>;
-    const theme = new Theme(fgColors as never, bgColors as never, "truecolor");
-    (theme as unknown as { fg: (color: string, text: string) => string }).fg = (_color, text) => text;
-    (theme as unknown as { bold: (text: string) => string }).bold = (text) => text;
-    const stripAnsi = (s: string) => s.replace(/\x1b\[[0-9;]*m/g, "");
-    const renderToText = (component: { render: (width: number) => string[] }) =>
-      stripAnsi(component.render(200).join("\n"));
+    const theme = makeMockTheme();
 
-    const callText = stripAnsi(
-      renderToText(
-        captured.renderCall(
-          { description: "Find auth files", subagent_type: "explorer", prompt: "..." },
-          theme,
-          {},
-        ),
+    const callText = renderToText(
+      captured.renderCall(
+        { description: "Find auth files", subagent_type: "explorer", prompt: "..." },
+        theme,
+        { executionStarted: false },
       ),
     );
     expect(callText).toContain("Agent");
     expect(callText).toContain("explorer");
     expect(callText).toContain("Find auth files");
+
+    const partialCallText = renderToText(
+      captured.renderCall(
+        { prompt: "..." },
+        theme,
+        { executionStarted: false },
+      ),
+    );
+    expect(partialCallText).toContain("Agent");
+    expect(partialCallText).not.toContain("undefined");
 
     const buildResult = (status: "completed" | "error" | "rejected") => ({
       content: [{ type: "text" as const, text: "x" }],
@@ -469,34 +613,116 @@ describe("pi-subagent", () => {
       },
     });
 
-    const completedText = stripAnsi(
-      renderToText(captured.renderResult(buildResult("completed"), {}, theme, {})),
-    );
+    const completedText = renderToText(captured.renderResult(buildResult("completed"), {}, theme, {}));
     expect(completedText).toContain("Agent");
     expect(completedText).toContain("explorer");
     expect(completedText).toContain("Find auth files");
     expect(completedText).toContain("completed");
 
-    const errorText = stripAnsi(
-      renderToText(captured.renderResult(buildResult("error"), {}, theme, {})),
-    );
+    const errorText = renderToText(captured.renderResult(buildResult("error"), {}, theme, {}));
     expect(errorText).toContain("error");
 
-    const rejectedText = stripAnsi(
-      renderToText(captured.renderResult(buildResult("rejected"), {}, theme, {})),
-    );
+    const rejectedText = renderToText(captured.renderResult(buildResult("rejected"), {}, theme, {}));
     expect(rejectedText).toContain("rejected");
 
-    const unknownCallText = stripAnsi(
-      renderToText(
-        captured.renderCall(
-          { description: "Bad", subagent_type: "ghost", prompt: "..." },
-          theme,
-          {},
-        ),
+    const unknownCallText = renderToText(
+      captured.renderCall(
+        { description: "Bad", subagent_type: "ghost", prompt: "..." },
+        theme,
+        { executionStarted: false },
       ),
     );
     expect(unknownCallText).toContain("unknown");
+
+    const executingCallText = renderToText(
+      captured.renderCall(
+        { description: "Find auth files", subagent_type: "explorer", prompt: "..." },
+        theme,
+        { executionStarted: true },
+      ),
+    );
+    expect(executingCallText).toBe("");
+  });
+
+  it("renders compact nested progress with rolling activity and descriptions", async () => {
+    let captured: any;
+    const mockApi: any = {
+      registerTool: (tool: any) => {
+        captured = tool;
+      },
+      on: () => {},
+    };
+    const factory = createSubagentExtension();
+    await factory(mockApi);
+
+    const theme = makeMockTheme();
+    const now = 1_700_000_000_000;
+    const dateNow = vi.spyOn(Date, "now").mockReturnValue(now);
+    try {
+      const result = {
+        content: [{ type: "text" as const, text: "done" }],
+        details: {
+          description: "Research repo",
+          subagentType: "explorer" as const,
+          depth: 1,
+          status: "running" as const,
+          progress: {
+            id: "root-progress",
+            description: "Research repo",
+            subagentType: "explorer" as const,
+            depth: 1,
+            status: "running" as const,
+            startedAt: now - 2000,
+            activity: ["Read src/types.ts", "Read app.py", "Read config.yaml"],
+            activityCount: 5,
+            children: [
+              {
+                id: "nested-progress",
+                description: "Nested audit",
+                subagentType: "general-purpose" as const,
+                depth: 2,
+                status: "completed" as const,
+                startedAt: now - 4000,
+                endedAt: now - 1000,
+                activity: ["checked nested files"],
+                activityCount: 1,
+                children: [],
+                result: "nested done",
+              },
+              {
+                id: "error-progress",
+                description: "",
+                subagentType: "general-purpose" as const,
+                depth: 2,
+                status: "error" as const,
+                startedAt: now - 5000,
+                endedAt: now - 2000,
+                activity: [],
+                activityCount: 0,
+                children: [],
+                error: "nested failed",
+              },
+            ],
+          },
+        },
+      };
+
+      const text = renderToText(captured.renderResult(result, {}, theme, {}));
+
+      expect(text).toContain("Agent(explorer: Research repo)");
+      expect(text).toContain("running 2s");
+      expect(text).toContain("... +2 earlier events");
+      expect(text).toContain("Read src/types.ts");
+      expect(text).toContain("Read app.py");
+      expect(text).toContain("Read config.yaml");
+      expect(text).toContain("Agent(general-purpose: Nested audit)");
+      expect(text).toContain("done 3s");
+      expect(text).toContain("checked nested files");
+      expect(text).toContain("Agent(general-purpose) error 3s");
+      expect(text).toContain("nested failed");
+    } finally {
+      dateNow.mockRestore();
+    }
   });
 
   it("registers the Agent tool when loaded via additionalExtensionPaths", async () => {
@@ -535,6 +761,7 @@ describe("pi-subagent", () => {
       sessionManager,
       resourceLoader,
     });
+    trackSession(session);
     await session.bindExtensions({});
 
     const tool = session.getAllTools().find((candidate) => candidate.name === "Agent");
@@ -543,7 +770,7 @@ describe("pi-subagent", () => {
       "subagent_type",
     );
 
-    session.dispose();
+    disposeSession(session);
   });
 
   describe("proactive routing scenarios", () => {
@@ -608,7 +835,7 @@ describe("pi-subagent", () => {
       expect(finalSerialized).toContain("repo-b auth uses JWT");
       expect(finalSerialized).not.toContain("Maximum subagent width reached");
 
-      session.dispose();
+      disposeSession(session);
     });
 
     it("scenario 2: broad codebase exploration → coordinator-aware router delegates to explorer", async () => {
@@ -639,7 +866,7 @@ describe("pi-subagent", () => {
       expect(serialized).toContain("rate-limit.ts");
       expect(registration.getPendingResponseCount()).toBe(0);
 
-      session.dispose();
+      disposeSession(session);
     });
 
     it("scenario 3: single-file lookup → router does NOT delegate", async () => {
@@ -670,7 +897,7 @@ describe("pi-subagent", () => {
       expect(serialized).not.toContain("delegated wrongly");
       expect(registration.getPendingResponseCount()).toBe(0);
 
-      session.dispose();
+      disposeSession(session);
     });
 
     it("scenario 4: fan-out audit → router emits multiple parallel Agent calls", async () => {
@@ -703,7 +930,7 @@ describe("pi-subagent", () => {
       expect(serialized).toContain("2 skipped tests");
       expect(registration.getPendingResponseCount()).toBe(0);
 
-      session.dispose();
+      disposeSession(session);
     });
   });
 });
