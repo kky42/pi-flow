@@ -725,6 +725,57 @@ describe("pi-subagent", () => {
     }
   });
 
+  it("folds long progress activity lines only in the rendered subagent window", async () => {
+    let captured: any;
+    const mockApi: any = {
+      registerTool: (tool: any) => {
+        captured = tool;
+      },
+      on: () => {},
+    };
+    const factory = createSubagentExtension();
+    await factory(mockApi);
+
+    const theme = makeMockTheme();
+    const hiddenTail = "TAIL_MARKER_SHOULD_STAY_OUT_OF_RENDERED_PREVIEW";
+    const longCommand = `bash uv run python - <<'PY' ${"print('long progress payload') ".repeat(30)}${hiddenTail} PY`;
+    const result = {
+      content: [{ type: "text" as const, text: "running" }],
+      details: {
+        description: "Long tool call",
+        subagentType: "general-purpose" as const,
+        depth: 1,
+        status: "running" as const,
+        progress: {
+          id: "long-progress",
+          description: "Long tool call",
+          subagentType: "general-purpose" as const,
+          depth: 1,
+          status: "running" as const,
+          startedAt: Date.now(),
+          activity: [longCommand],
+          activityCount: 1,
+          children: [],
+        },
+      },
+    };
+
+    const text = renderToText(captured.renderResult(result, {}, theme, {}));
+
+    expect(text).toContain("bash uv run python");
+    expect(text).toContain("... (+");
+    expect(text).toContain("chars)");
+    expect(text).not.toContain(hiddenTail);
+    expect(result.details.progress.activity[0]).toBe(longCommand);
+
+    const narrowLines = captured
+      .renderResult(result, {}, theme, {})
+      .render(80)
+      .map((line: string) => stripAnsi(line))
+      .filter((line: string) => line.trim());
+    expect(narrowLines).toHaveLength(2);
+  });
+
   it("registers the Agent tool when loaded via additionalExtensionPaths", async () => {
     const registration = registerFauxProvider({
       models: [{ id: "faux-thinker", name: "Faux Thinker", reasoning: true }],

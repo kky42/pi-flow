@@ -12,7 +12,7 @@ import {
   type Theme,
   type ToolDefinition,
 } from "@earendil-works/pi-coding-agent";
-import { Container, Text } from "@earendil-works/pi-tui";
+import { Container, Text, TruncatedText } from "@earendil-works/pi-tui";
 import { Type, type Static } from "typebox";
 import {
   AGENT_PROMPT_GUIDELINES,
@@ -57,6 +57,7 @@ interface CreateAgentToolOptions {
 type AgentToolResult = ReturnType<typeof textResult>;
 
 const MAX_ACTIVITY_LINES = 3;
+const ACTIVITY_DISPLAY_PREVIEW_CHARS = 120;
 const PROGRESS_UPDATE_INTERVAL_MS = 250;
 const PROGRESS_STATUSES: SubagentProgressNode["status"][] = ["running", "completed", "rejected", "error"];
 
@@ -308,6 +309,14 @@ function formatDuration(ms: number): string {
   return `${seconds}s`;
 }
 
+function formatActivityLineForDisplay(line: string): string {
+  if (line.length <= ACTIVITY_DISPLAY_PREVIEW_CHARS) {
+    return line;
+  }
+  const hiddenChars = line.length - ACTIVITY_DISPLAY_PREVIEW_CHARS;
+  return `${line.slice(0, ACTIVITY_DISPLAY_PREVIEW_CHARS).trimEnd()} ... (+${hiddenChars} chars)`;
+}
+
 function renderProgressNode(
   node: SubagentProgressNode,
   theme: Theme,
@@ -330,7 +339,7 @@ function renderProgressNode(
     container.addChild(new Text(`${indent}  ${theme.fg("muted", `... +${skipped} earlier events`)}`, 0, 0));
   }
   for (const line of node.activity) {
-    container.addChild(new Text(`${indent}  ${theme.fg("muted", line)}`, 0, 0));
+    container.addChild(new TruncatedText(`${indent}  ${theme.fg("muted", formatActivityLineForDisplay(line))}`, 0, 0));
   }
 
   for (const child of node.children) {
