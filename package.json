@@ -1,10 +1,17 @@
 {
-  "name": "pi-subagent",
-  "version": "0.1.0",
-  "description": "Lightweight Claude Code-style subagent extension for pi.",
+  "name": "@kky42/pi-subagents",
+  "version": "1.0.0",
+  "description": "Claude Code-style subagents for pi.",
   "type": "module",
   "main": "./index.ts",
   "exports": "./index.ts",
+  "files": [
+    "index.ts",
+    "src",
+    "README.md",
+    "LICENSE",
+    "assets"
+  ],
   "keywords": [
     "pi-package",
     "pi-extension",
@@ -40,5 +47,16 @@
   },
   "engines": {
     "node": ">=22.19.0"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/kky42/pi-subagents.git"
+  },
+  "bugs": {
+    "url": "https://github.com/kky42/pi-subagents/issues"
+  },
+  "homepage": "https://github.com/kky42/pi-subagents#readme",
+  "publishConfig": {
+    "access": "public"
   }
 }
