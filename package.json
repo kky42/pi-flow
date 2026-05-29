@@ -1,6 +1,6 @@
 {
   "name": "@kky42/pi-subagents",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "Claude Code-style subagents for pi.",
   "type": "module",
   "main": "./index.ts",
@@ -43,7 +43,8 @@
   "pi": {
     "extensions": [
       "./index.ts"
-    ]
+    ],
+    "image": "https://raw.githubusercontent.com/kky42/pi-subagents/main/assets/subagents.png"
   },
   "engines": {
     "node": ">=22.19.0"
