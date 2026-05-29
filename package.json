@@ -1,0 +1,44 @@
+{
+  "name": "pi-subagent",
+  "version": "0.1.0",
+  "description": "Lightweight Claude Code-style subagent extension for pi.",
+  "type": "module",
+  "main": "./index.ts",
+  "exports": "./index.ts",
+  "keywords": [
+    "pi-package",
+    "pi-extension",
+    "subagent"
+  ],
+  "license": "MIT",
+  "scripts": {
+    "build": "tsc",
+    "check": "tsc --noEmit && vitest run",
+    "test": "vitest run"
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-agent-core": "*",
+    "@earendil-works/pi-ai": "*",
+    "@earendil-works/pi-coding-agent": "*",
+    "@earendil-works/pi-tui": "*",
+    "typebox": "*"
+  },
+  "devDependencies": {
+    "@earendil-works/pi-agent-core": "0.77.0",
+    "@earendil-works/pi-ai": "0.77.0",
+    "@earendil-works/pi-coding-agent": "0.77.0",
+    "@earendil-works/pi-tui": "0.77.0",
+    "@types/node": "^24.12.4",
+    "typebox": "1.1.38",
+    "typescript": "^5.9.3",
+    "vitest": "^3.2.4"
+  },
+  "pi": {
+    "extensions": [
+      "./index.ts"
+    ]
+  },
+  "engines": {
+    "node": ">=22.19.0"
+  }
+}
