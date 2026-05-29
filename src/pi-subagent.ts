@@ -14,7 +14,12 @@ import {
 } from "@earendil-works/pi-coding-agent";
 import { Container, Text } from "@earendil-works/pi-tui";
 import { Type, type Static } from "typebox";
-import { buildCoordinatorPrompt, getPresetAppendPrompt } from "./prompts.ts";
+import {
+  AGENT_PROMPT_GUIDELINES,
+  AGENT_PROMPT_SNIPPET,
+  buildCoordinatorPrompt,
+  getPresetAppendPrompt,
+} from "./prompts.ts";
 import type { SubagentExtensionOptions, SubagentProgressNode, SubagentToolDetails, SubagentType } from "./types.ts";
 
 const DEFAULT_MAX_DEPTH = 2;
@@ -520,18 +525,9 @@ function createAgentTool(
   return defineTool({
     name: "Agent",
     label: "Agent",
-    description: `Launch a fresh foreground subagent. Available preset subagents: ${ALLOWED_SUBAGENTS.join(", ")}.
-
-Use this tool for independent work that matches a preset, spans several files, fans out into separate workstreams, or would otherwise fill your context with large search output. Default to Agent for repo/branch ship-readiness audits, cross-repo comparisons, independent checklist searches, and second opinions on risky migrations or security-sensitive paths.
-
-Subagents start with fresh conversation history, so prompts must be self-contained.`,
-    promptSnippet: "Launch a fresh foreground subagent for scoped work.",
-    promptGuidelines: [
-      "Use Agent for independent multi-file exploration or scoped work that should not fill the main context.",
-      "Default to Agent for broad repo audits, cross-repo comparisons, independent checklist searches, and second opinions on risky migrations.",
-      "Subagent prompts must be self-contained because subagents start with fresh conversation history.",
-      "After Agent returns, relay the important findings to the user; the user does not see the tool result directly.",
-    ],
+    description: `Launch a fresh subagent. Available agents: ${ALLOWED_SUBAGENTS.join(", ")}. Prompts must be self-contained.`,
+    promptSnippet: AGENT_PROMPT_SNIPPET,
+    promptGuidelines: AGENT_PROMPT_GUIDELINES,
     parameters: agentToolParameters,
     executionMode: "parallel",
     async execute(toolCallId, params, signal, onUpdate, ctx) {

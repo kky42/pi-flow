@@ -2,10 +2,32 @@ import type { SubagentType } from "./types.ts";
 
 export const PRESET_DESCRIPTIONS: Record<SubagentType, string> = {
   "general-purpose":
-    "General-purpose subagent for researching complex questions, searching code, and handling scoped multi-step tasks.",
+    "General-purpose agent for researching complex questions, searching for code, and executing multi-step tasks.",
   explorer:
-    "File search specialist for locating code, tracing references, and reporting concise findings without modifying files.",
+    "Fast read-only search agent for locating code, mapping repositories, tracing references, and reporting concise findings.",
 };
+
+export const AGENT_PROMPT_SNIPPET =
+  "Launch a fresh subagent when the task matches an available agent, can run independently, or would read across several files.";
+
+export const AGENT_PROMPT_GUIDELINES = [
+  "Reach for Agent when the task matches an available agent, when you have independent work to run in parallel, or when answering would mean reading across several files.",
+  "Use explorer for repository reconnaissance, locating files, grepping symbols or keywords, tracing references, and concise read-only findings.",
+  "Use general-purpose for researching complex questions, broader multi-step investigations, or independent second opinions.",
+  "For a single-fact lookup where you already know the file, symbol, or value, search directly instead of spawning a subagent.",
+  "Once you delegate a search, do not also run the same search yourself; wait for the result and keep the conclusion, not raw file dumps.",
+  "If the user asks to explore or survey a repo, use explorer to produce a concise map before doing detailed follow-up yourself.",
+  "If the user asks for parallel work, launch multiple Agent calls in the same assistant response.",
+  "Write self-contained subagent prompts: fresh subagents do not inherit parent conversation, tool results, or reasoning.",
+  "Clearly tell the subagent whether you expect read-only research or code changes.",
+  "The Agent final message is returned to you as the tool result and is not shown to the user; relay what matters.",
+];
+
+function formatAvailableAgents(agentDescriptions: Record<string, string>): string {
+  return Object.entries(agentDescriptions)
+    .map(([name, description]) => `- ${name}: ${description}`)
+    .join("\n");
+}
 
 export function getPresetAppendPrompt(subagentType: SubagentType): string | undefined {
   if (subagentType === "general-purpose") {
@@ -28,40 +50,14 @@ Return a concise final report with the relevant files, symbols, and caveats. Do 
 export function buildCoordinatorPrompt(_maxDepth: number, _maxWidth: number): string {
   return `# Subagent Delegation
 
-You have access to an Agent tool for foreground subagent delegation.
+Available agents:
+${formatAvailableAgents(PRESET_DESCRIPTIONS)}
 
-Available preset subagents:
-- general-purpose: default. A fresh normal pi agent with no extra role prompt.
-- explorer: file search specialist for locating code and reporting findings. It is prompted to behave read-only, but v1 does not enforce tool restrictions.
+Use Agent with specialized agents when the task at hand matches the agent's description. Subagents are valuable for parallelizing independent queries or protecting the main context window from excessive results, but they should not be used excessively when not needed.
 
-Use Agent proactively when a task is independent, spans multiple files, matches a preset, fans out into parallel workstreams, or would otherwise fill the main context with large search/read output. Keep the conclusion in your context, not raw file dumps. Do not duplicate work already delegated to a subagent.
+Example usage:
+- User asks "explore this repo": use Agent with subagent_type "explorer" and ask it to map the project purpose, key directories, important files, scripts, tests, and caveats without editing files.
+- User asks for a second opinion on a risky change: use Agent with subagent_type "general-purpose" and give it enough context to review independently.
 
-Default to Agent for broad surveys and multi-lane investigations. If the user asks for a repo/branch audit, ship-readiness review, implementation comparison, cross-repo research, or several independent searches, delegate first and synthesize from the returned reports instead of personally reading every file.
-
-Do not use Agent for a single-file read, a specific symbol/value lookup, or a sequential change where you already know the target file and can act directly.
-
-When launching multiple subagents for independent work, issue multiple Agent tool calls in the same assistant response so they can run as foreground parallel delegations. For several independent search lanes, launch one focused explorer per lane before running direct searches yourself.
-
-Classic cases where Agent is usually appropriate:
-- Branch or repo ship-readiness audits that need git state, tests/build, architecture, and risk scanning. Delegate the survey and keep only the punch list.
-- Comparing the same concern across two repositories or packages. Launch one explorer per repo/package and synthesize the comparison yourself.
-- Independent checklist searches such as TODOs, FIXMEs, skipped tests, migrations, CI config, and auth entry points. Launch focused explorer subagents for independent search lanes when several lanes are requested.
-- Getting a second opinion on a risky migration, security-sensitive path, or release blocker. Use a subagent for independent evidence, then make the final call yourself.
-
-Examples:
-- User asks "What's left before this branch can ship?" Use Agent with description "Branch ship-readiness audit" and an explorer prompt that checks git state, tests/build, config, changed files, and obvious blockers. Then relay the punch list.
-- User asks "Compare auth in repo-a and repo-b." Launch two explorer Agent calls in the same assistant response, one scoped to repo-a and one scoped to repo-b. Then synthesize the comparison.
-- User asks "Audit TODOs, FIXMEs, and skipped tests." Launch focused explorer Agent calls for those independent lanes, then summarize counts, files, and risk.
-
-Each subagent starts with a fresh conversation. The subagent does not see this conversation, parent tool results, or parent reasoning. Write a self-contained prompt that explains the task, relevant context, what is already known or ruled out, and the expected output.
-
-Brief each subagent like a capable colleague who just joined: explain the goal, why it matters, search focus, relevant paths or commands if known, and the requested report shape. Terse command-style prompts produce shallow results.
-
-Never delegate understanding. Do not ask a subagent to "fix it based on your findings" or otherwise push synthesis onto it. Use subagents to gather independent evidence, then synthesize and decide yourself.
-
-The subagent's final message is returned to you as a tool result and is not shown directly to the user. Relay the important findings yourself.
-
-This v1 supports foreground subagents only. Do not ask for background execution, resume, steering, model overrides, thinking overrides, permissions, or user-defined agents yet.
-
-Nested subagents are allowed, but delegation depth and width are bounded by the extension. If a limit is reached, the Agent tool will reject the call and return a clear tool result.`;
+Nested subagents are allowed, but delegation depth and width are bounded by the extension. If a limit is reached, the Agent tool will reject the call.`;
 }

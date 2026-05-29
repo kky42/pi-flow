@@ -135,10 +135,9 @@ describe("pi-subagent", () => {
     expect(properties).not.toHaveProperty("resume");
     expect(properties).not.toHaveProperty("model");
     expect(properties).not.toHaveProperty("thinking");
-    expect(tool?.description).toContain("ship-readiness audits");
-    expect(tool?.description).toContain("second opinions on risky migrations");
+    expect(tool?.description).toContain("Available agents");
     expect(tool?.promptGuidelines).toContain(
-      "Default to Agent for broad repo audits, cross-repo comparisons, independent checklist searches, and second opinions on risky migrations.",
+      "Reach for Agent when the task matches an available agent, when you have independent work to run in parallel, or when answering would mean reading across several files.",
     );
 
     disposeSession(session);
@@ -443,12 +442,13 @@ describe("pi-subagent", () => {
     expect(rootContext?.systemPrompt).toContain("delegation depth and width are bounded");
     expect(rootContext?.systemPrompt).not.toContain("max depth 2");
     expect(rootContext?.systemPrompt).not.toContain("max width 4");
-    expect(rootContext?.systemPrompt).toContain("Use Agent proactively");
-    expect(rootContext?.systemPrompt).toContain("Default to Agent for broad surveys");
-    expect(rootContext?.systemPrompt).toContain("ship-readiness audits");
-    expect(rootContext?.systemPrompt).toContain("Comparing the same concern across two repositories");
-    expect(rootContext?.systemPrompt).toContain("TODOs, FIXMEs, skipped tests");
-    expect(rootContext?.systemPrompt).toContain("User asks \"What's left before this branch can ship?\"");
+    expect(rootContext?.systemPrompt).toContain("Available agents");
+    expect(rootContext?.systemPrompt).toContain("general-purpose: General-purpose agent for researching complex questions");
+    expect(rootContext?.systemPrompt).toContain("explorer: Fast read-only search agent");
+    expect(rootContext?.systemPrompt).toContain("Reach for Agent when the task matches an available agent");
+    expect(rootContext?.systemPrompt).toContain('User asks "explore this repo"');
+    expect(rootContext?.systemPrompt).toContain("single-fact lookup");
+    expect(rootContext?.systemPrompt).toContain("Once you delegate a search");
 
     disposeSession(session);
   });
@@ -801,8 +801,10 @@ describe("pi-subagent", () => {
             .map((message) => JSON.stringify((message as { content?: unknown }).content))
             .join("\n");
           const mentionsTwoRepos = /repo-a/.test(userText) && /repo-b/.test(userText);
-          const promptSaysProactive = (context.systemPrompt ?? "").includes("Use Agent proactively");
-          if (mentionsTwoRepos && promptSaysProactive) {
+          const promptSaysUseAgent = (context.systemPrompt ?? "").includes(
+            "Reach for Agent when the task matches an available agent",
+          );
+          if (mentionsTwoRepos && promptSaysUseAgent) {
             return fauxAssistantMessage(
               [
                 fauxToolCall("Agent", {
@@ -828,8 +830,8 @@ describe("pi-subagent", () => {
 
       await session.prompt("Compare how auth is implemented in repo-a/ and repo-b/.");
 
-      expect(rootContext?.systemPrompt).toContain("Use Agent proactively");
-      expect(rootContext?.systemPrompt).toContain("multiple Agent tool calls in the same assistant response");
+      expect(rootContext?.systemPrompt).toContain("Reach for Agent when the task matches an available agent");
+      expect(rootContext?.systemPrompt).toContain("multiple Agent calls in the same assistant response");
       const finalSerialized = JSON.stringify(session.messages);
       expect(finalSerialized).toContain("repo-a auth uses session cookies");
       expect(finalSerialized).toContain("repo-b auth uses JWT");
@@ -844,7 +846,7 @@ describe("pi-subagent", () => {
       registration.setResponses([
         makeRouter((userText, systemPrompt) => {
           const broad = /across this codebase|where is .* handled/i.test(userText);
-          const explorerHinted = systemPrompt.includes("explorer") && systemPrompt.includes("file search");
+          const explorerHinted = systemPrompt.includes("explorer") && systemPrompt.includes("locating files");
           if (broad && explorerHinted) {
             return [
               fauxToolCall("Agent", {
@@ -876,7 +878,7 @@ describe("pi-subagent", () => {
         makeRouter((userText, systemPrompt) => {
           const singleFile = /line \d+ of |what does .* in src\/.*\.(ts|js) do/i.test(userText);
           const knowsNotToDelegate = systemPrompt.includes(
-            "Do not use Agent for a single-file read",
+            "single-fact lookup where you already know the file",
           );
           if (singleFile && knowsNotToDelegate) {
             return "Line 42 of src/foo.ts does X — answered directly without delegation.";
@@ -900,13 +902,13 @@ describe("pi-subagent", () => {
       disposeSession(session);
     });
 
-    it("scenario 4: fan-out audit → router emits multiple parallel Agent calls", async () => {
+    it("scenario 4: explicit parallel audit → router emits multiple parallel Agent calls", async () => {
       const { session, registration } = await createSession();
 
       registration.setResponses([
         makeRouter((userText, systemPrompt) => {
-          const fanOut = /audit .* TODOs.*FIXMEs.*skipped tests/i.test(userText);
-          const promptSaysParallel = systemPrompt.includes("multiple Agent tool calls");
+          const fanOut = /parallel.*TODOs.*FIXMEs.*skipped tests/i.test(userText);
+          const promptSaysParallel = systemPrompt.includes("multiple Agent calls");
           if (fanOut && promptSaysParallel) {
             return [
               fauxToolCall("Agent", { description: "Find TODOs", subagent_type: "explorer", prompt: "Grep for TODO." }),
@@ -922,7 +924,7 @@ describe("pi-subagent", () => {
         fauxAssistantMessage("Audit complete: 3 TODOs, 1 FIXME, 2 skipped tests."),
       ]);
 
-      await session.prompt("Audit our code for TODOs, FIXMEs, and skipped tests.");
+      await session.prompt("In parallel, audit our code for TODOs, FIXMEs, and skipped tests.");
 
       const serialized = JSON.stringify(session.messages);
       expect(serialized).toContain("3 TODOs");
