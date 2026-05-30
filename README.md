@@ -17,7 +17,7 @@ Fresh subagents start with their own conversation and the same working directory
 
 Recent comparison runs:
 
-| Case | Claude haiku | pi deepseek-v4-flash |
+| Case | Claude Code | pi deepseek-v4-flash |
 | --- | --- | --- |
 | explore this repo | 1 Agent(Explore) | 1 Agent(explorer) |
 | auth multi-repo comparison | 1 Agent | 3 Agent calls |
@@ -58,7 +58,32 @@ The explorer returns a concise repo map, and the main agent relays the useful pa
 
 ## Notes
 
-- Nested delegation is supported and bounded by the extension.
+- Subagents cannot launch other subagents; the main agent coordinates follow-up delegation after each result returns.
+- Root-level parallel delegation is supported and bounded by the extension.
 - Subagents inherit the caller's current model and thinking level.
 - Subagents do not inherit parent conversation messages or tool results, so prompts should be self-contained.
 - `explorer` is prompted as read-only; pi permissions are still controlled by the active pi runtime.
+
+## E2E
+
+Run the main-agent behavior e2e matrix:
+
+```bash
+npm run e2e
+```
+
+This downloads fresh GitHub fixtures (`sindresorhus/ky` and `sindresorhus/got` by default), runs fresh `pi -p` sessions with ambient skills, extensions, prompt templates, themes, and context files disabled, then records Claude Code-style routing scenarios. The default pi settings are `deepseek/deepseek-v4-flash` with `--thinking high`.
+
+- codebase exploration
+- review
+- simple codebase QA
+- small feature implementation
+- two-codebase comparison
+
+To compare the same scenarios against Claude Code:
+
+```bash
+npm run e2e:compare-claude
+```
+
+The Claude comparison uses `--model haiku --effort high` by default. If `DEEPSEEK_API_KEY` is exported or present in `.env`, the runner configures Claude Code with DeepSeek's Anthropic-compatible endpoint and maps `haiku` to `deepseek-v4-flash[1m]`; it also creates a temporary pi auth file for the same key. It writes a report under `/tmp`, shows `MATCH` or `DIFF` for each scenario, and treats timeouts or budget caps in observational scenarios as inconclusive by default. Add `-- --repeat 3` to repeat each task, `-- --strict-observed` when incomplete observational scenarios should fail the command, or `-- --strict-claude` when Claude-side failures should fail the command.

@@ -19,6 +19,7 @@ export const AGENT_PROMPT_GUIDELINES = [
   "If the user asks to explore or survey a repo, use explorer to produce a concise map before doing detailed follow-up yourself.",
   "If the user asks for parallel work, launch multiple Agent calls in the same assistant response.",
   "Write self-contained subagent prompts: fresh subagents do not inherit parent conversation, tool results, or reasoning.",
+  "Subagents cannot launch Agent themselves; coordinate any follow-up delegation from the main conversation after a result returns.",
   "Clearly tell the subagent whether you expect read-only research or code changes.",
   "The Agent final message is returned to you as the tool result and is not shown to the user; relay what matters.",
 ];
@@ -47,17 +48,24 @@ Adapt your search breadth to the caller's prompt. For targeted lookups, be fast 
 Return a concise final report with the relevant files, symbols, and caveats. Do not create documentation files.`;
 }
 
-export function buildCoordinatorPrompt(_maxDepth: number, _maxWidth: number): string {
+export function buildCoordinatorPrompt(): string {
   return `# Subagent Delegation
 
 Available agents:
 ${formatAvailableAgents(PRESET_DESCRIPTIONS)}
 
-Use Agent with specialized agents when the task at hand matches the agent's description. Subagents are valuable for parallelizing independent queries or protecting the main context window from excessive results, but they should not be used excessively when not needed.
+Use Agent when a specialized agent matches the task, the work can run independently, or delegating would keep large search/read output out of the main context.
+
+Guidelines:
+- Do not use subagents excessively; direct lookup is better when the target file, symbol, or value is already known.
+- If the user asks for parallel work, launch independent Agent calls in the same assistant response.
+- Subagents start fresh and do not inherit parent messages, tool results, or reasoning. Brief them with all needed context.
+- Subagents cannot launch other subagents. Coordinate follow-up delegation from the main conversation after each result returns.
+- The Agent final message is returned to you as the tool result. Relay what matters to the user.
 
 Example usage:
 - User asks "explore this repo": use Agent with subagent_type "explorer" and ask it to map the project purpose, key directories, important files, scripts, tests, and caveats without editing files.
 - User asks for a second opinion on a risky change: use Agent with subagent_type "general-purpose" and give it enough context to review independently.
 
-Nested subagents are allowed, but delegation depth and width are bounded by the extension. If a limit is reached, the Agent tool will reject the call.`;
+Root-level parallel delegation is bounded by the extension. If the limit is reached, the Agent tool will reject the call.`;
 }

@@ -22,7 +22,6 @@ import {
 } from "./prompts.ts";
 import type { SubagentExtensionOptions, SubagentProgressNode, SubagentToolDetails, SubagentType } from "./types.ts";
 
-const DEFAULT_MAX_DEPTH = 2;
 const DEFAULT_MAX_WIDTH = 4;
 const ALLOWED_SUBAGENTS: SubagentType[] = ["general-purpose", "explorer"];
 
@@ -43,8 +42,6 @@ const agentToolParameters = Type.Object({
 type AgentToolParams = Static<typeof agentToolParameters>;
 
 interface DelegationState {
-  depth: number;
-  maxDepth: number;
   maxWidth: number;
   childCount: number;
   progressEnabled: boolean;
@@ -115,40 +112,28 @@ function isSubagentProgressNode(value: unknown): value is SubagentProgressNode {
     typeof value.id === "string" &&
     typeof value.description === "string" &&
     (subagentType === "unknown" || ALLOWED_SUBAGENTS.includes(subagentType as SubagentType)) &&
-    Number.isFinite(value.depth) &&
     isProgressStatus(value.status) &&
     Number.isFinite(value.startedAt) &&
     Array.isArray(value.activity) &&
     value.activity.every((line) => typeof line === "string") &&
-    Number.isFinite(value.activityCount) &&
-    Array.isArray(value.children)
+    Number.isFinite(value.activityCount)
   );
-}
-
-function getProgressFromToolResult(result: unknown): SubagentProgressNode | undefined {
-  if (!isRecord(result) || !isRecord(result.details) || !("subagentType" in result.details)) {
-    return undefined;
-  }
-  return isSubagentProgressNode(result.details.progress) ? result.details.progress : undefined;
 }
 
 function createProgressNode(
   id: string,
   params: AgentToolParams,
   subagentType: SubagentType,
-  depth: number,
   status: SubagentProgressNode["status"] = "running",
 ): SubagentProgressNode {
   return {
     id,
     description: params.description,
     subagentType,
-    depth,
     status,
     startedAt: Date.now(),
     activity: [],
     activityCount: 0,
-    children: [],
   };
 }
 
@@ -229,18 +214,10 @@ function updateProgressFromEvent(progress: SubagentProgressNode, event: AgentSes
   }
 
   if (event.type === "tool_execution_update") {
-    const childProgress = event.toolName === "Agent" ? getProgressFromToolResult(event.partialResult) : undefined;
-    if (childProgress) {
-      progress.children = mergeChildProgress(progress.children, childProgress);
-    }
     return;
   }
 
   if (event.type === "tool_execution_end") {
-    const childProgress = event.toolName === "Agent" ? getProgressFromToolResult(event.result) : undefined;
-    if (childProgress) {
-      progress.children = mergeChildProgress(progress.children, childProgress);
-    }
     return;
   }
 
@@ -264,19 +241,6 @@ function updateProgressFromEvent(progress: SubagentProgressNode, event: AgentSes
       replaceLatestActivity(progress, getFirstTextLine(text));
     }
   }
-}
-
-function mergeChildProgress(
-  children: SubagentProgressNode[],
-  child: SubagentProgressNode,
-): SubagentProgressNode[] {
-  const index = children.findIndex((candidate) => candidate.id === child.id);
-  if (index === -1) {
-    return [...children, child];
-  }
-  const next = children.slice();
-  next[index] = child;
-  return next;
 }
 
 function getDisplayLabel(subagentType: SubagentType | "unknown"): string {
@@ -312,18 +276,13 @@ function formatActivityLineForDisplay(line: string): string {
   return `${line.slice(0, ACTIVITY_DISPLAY_PREVIEW_CHARS).trimEnd()} ... (+${hiddenChars} chars)`;
 }
 
-function renderProgressNode(
-  node: SubagentProgressNode,
-  theme: Theme,
-  depth = 0,
-): Container {
+function renderProgressNode(node: SubagentProgressNode, theme: Theme): Container {
   const container = new Container();
-  const indent = "  ".repeat(depth);
   const status = node.status === "completed" ? "done" : node.status;
   const elapsed = formatDuration((node.endedAt ?? Date.now()) - node.startedAt);
   container.addChild(
     new Text(
-      `${indent}${theme.bold(formatProgressTitle(node))} ${theme.fg("dim", `${status} ${elapsed}`)}`,
+      `${theme.bold(formatProgressTitle(node))} ${theme.fg("dim", `${status} ${elapsed}`)}`,
       0,
       0,
     ),
@@ -331,17 +290,14 @@ function renderProgressNode(
 
   const skipped = node.activityCount - node.activity.length;
   if (skipped > 0) {
-    container.addChild(new Text(`${indent}  ${theme.fg("muted", `... +${skipped} earlier events`)}`, 0, 0));
+    container.addChild(new Text(`  ${theme.fg("muted", `... +${skipped} earlier events`)}`, 0, 0));
   }
   for (const line of node.activity) {
-    container.addChild(new TruncatedText(`${indent}  ${theme.fg("muted", formatActivityLineForDisplay(line))}`, 0, 0));
+    container.addChild(new TruncatedText(`  ${theme.fg("muted", formatActivityLineForDisplay(line))}`, 0, 0));
   }
 
-  for (const child of node.children) {
-    container.addChild(renderProgressNode(child, theme, depth + 1));
-  }
   if (node.error) {
-    container.addChild(new Text(`${indent}  ${theme.fg("error", node.error)}`, 0, 0));
+    container.addChild(new Text(`  ${theme.fg("error", node.error)}`, 0, 0));
   }
 
   return container;
@@ -376,15 +332,13 @@ async function runSubagent(
   ctx: ExtensionContext,
   onProgress: ((result: AgentToolResult) => void) | undefined,
 ): Promise<ReturnType<typeof textResult>> {
-  const progressDepth = state.depth + 1;
   const progress =
-    state.progressEnabled ? createProgressNode(toolCallId, params, subagentType, progressDepth) : undefined;
+    state.progressEnabled ? createProgressNode(toolCallId, params, subagentType) : undefined;
 
   if (!ctx.model) {
     return textResult("Cannot launch subagent: no model is selected.", {
       description: params.description,
       subagentType,
-      depth: progressDepth,
       status: "rejected",
       error: "No model is selected",
       ...(progress ? { progress: { ...progress, status: "rejected", error: "No model is selected" } } : {}),
@@ -396,25 +350,19 @@ async function runSubagent(
   const settingsManager = SettingsManager.create(cwd, agentDir);
   const appendPrompts = [
     getPresetAppendPrompt(subagentType),
-    buildCoordinatorPrompt(state.maxDepth, state.maxWidth),
   ].filter((prompt): prompt is string => Boolean(prompt));
   const resourceLoader = new DefaultResourceLoader({
     cwd,
     agentDir,
     settingsManager,
+    extensionsOverride: (base) => ({
+      ...base,
+      extensions: base.extensions.filter((extension) => !extension.tools.has("Agent")),
+    }),
     appendSystemPromptOverride: (base) => [...base, ...appendPrompts],
   });
   await resourceLoader.reload();
 
-  const childState: DelegationState = {
-    depth: progressDepth,
-    maxDepth: state.maxDepth,
-    maxWidth: state.maxWidth,
-    childCount: 0,
-    progressEnabled: state.progressEnabled,
-  };
-
-  const nestedAgentTool = createAgentTool(childState, options);
   const { session } = await createAgentSession({
     cwd,
     agentDir,
@@ -424,7 +372,7 @@ async function runSubagent(
     settingsManager,
     sessionManager: SessionManager.inMemory(cwd),
     resourceLoader,
-    customTools: [nestedAgentTool as ToolDefinition],
+    excludeTools: ["Agent"],
   });
 
   let abortHandler: (() => void) | undefined;
@@ -451,7 +399,6 @@ async function runSubagent(
     onProgress(textResult(`Subagent "${params.description}" (${subagentType}) is running.`, {
       description: params.description,
       subagentType,
-      depth: progressDepth,
       status: progress.status,
       result: progress.result,
       error: progress.error,
@@ -498,7 +445,6 @@ async function runSubagent(
     return textResult(`Subagent "${params.description}" (${subagentType}) completed:\n\n${result}`, {
       description: params.description,
       subagentType,
-      depth: childState.depth,
       status: "completed",
       result,
       ...(progress ? { progress } : {}),
@@ -513,7 +459,6 @@ async function runSubagent(
     return textResult(`Subagent "${params.description}" (${subagentType}) failed: ${message}`, {
       description: params.description,
       subagentType,
-      depth: childState.depth,
       status: "error",
       error: message,
       ...(progress ? { progress } : {}),
@@ -554,22 +499,8 @@ function createAgentTool(
           {
             description: params.description,
             subagentType: "unknown",
-            depth: effectiveState.depth + 1,
             status: "rejected",
             error: "Unknown subagent_type",
-          },
-        );
-      }
-
-      if (effectiveState.depth >= effectiveState.maxDepth) {
-        return textResult(
-          `Maximum subagent depth reached. Current depth: ${effectiveState.depth}; maxDepth: ${effectiveState.maxDepth}.`,
-          {
-            description: params.description,
-            subagentType,
-            depth: effectiveState.depth + 1,
-            status: "rejected",
-            error: "Maximum subagent depth reached",
           },
         );
       }
@@ -580,7 +511,6 @@ function createAgentTool(
           {
             description: params.description,
             subagentType,
-            depth: effectiveState.depth + 1,
             status: "rejected",
             error: "Maximum subagent width reached",
           },
@@ -612,7 +542,7 @@ function createAgentTool(
       );
     },
     renderResult(result, _options, theme) {
-      const details = result.details;
+      const details = result.details as SubagentToolDetails;
       if (details.progress) {
         return renderProgressNode(details.progress, theme);
       }
@@ -626,13 +556,10 @@ function createAgentTool(
 }
 
 export function createSubagentExtension(options: SubagentExtensionOptions = {}): ExtensionFactory {
-  const maxDepth = normalizeLimit(options.maxDepth, DEFAULT_MAX_DEPTH, "maxDepth");
   const maxWidth = normalizeLimit(options.maxWidth, DEFAULT_MAX_WIDTH, "maxWidth");
 
   return function subagentExtension(pi: ExtensionAPI) {
     const rootState: DelegationState = {
-      depth: 0,
-      maxDepth,
       maxWidth,
       childCount: 0,
       progressEnabled: false,
@@ -644,9 +571,12 @@ export function createSubagentExtension(options: SubagentExtensionOptions = {}):
     pi.registerTool(createAgentTool(rootState, toolOptions));
 
     pi.on("before_agent_start", (event) => {
+      if (!pi.getAllTools().some((tool) => tool.name === "Agent")) {
+        return;
+      }
       rootState.childCount = 0;
       return {
-        systemPrompt: `${event.systemPrompt}\n\n${buildCoordinatorPrompt(maxDepth, maxWidth)}`,
+        systemPrompt: `${event.systemPrompt}\n\n${buildCoordinatorPrompt()}`,
       };
     });
   };

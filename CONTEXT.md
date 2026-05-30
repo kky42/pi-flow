@@ -8,12 +8,8 @@ This context describes the domain language for a lightweight Claude Code-style s
 A delegated pi agent instance that handles a scoped task in a fresh conversation and returns a final report to its caller. In this project, the unqualified term refers to foreground delegation; background jobs are outside the current meaning.
 _Avoid_: Background task, worker, scheduled agent
 
-**Delegation Depth**:
-The distance from the root caller to a delegated subagent in one delegation tree. The main agent is depth 0, its direct subagents are depth 1, and nested subagents continue from there.
-_Avoid_: Recursion level
-
 **Delegation Width**:
-The maximum number of direct child subagents one agent run may spawn in a delegation tree. In the synchronous v1 design this is a quota, not a concurrency limit.
+The maximum number of direct subagents the main agent may spawn in one foreground delegation turn. In the synchronous v1 design this is a quota, not a concurrency limit.
 _Avoid_: Concurrency, parallelism
 
 **Foreground Parallel Delegation**:
@@ -38,7 +34,7 @@ Developer: "Should this subagent keep the parent conversation?"
 Domain expert: "No. A subagent starts fresh, so the caller must brief it with the task, relevant context, and expected output."
 
 Developer: "Can a subagent call another subagent?"
-Domain expert: "Yes, while the delegation tree stays within the configured depth and width limits."
+Domain expert: "No. V1 matches Claude Code's root-orchestrated model: the main agent can launch subagents, and subagents cannot launch other subagents."
 
 Developer: "Does Explorer technically block file writes?"
 Domain expert: "Not in v1. It is prompted to stay read-only, but it still runs as a normal pi agent."

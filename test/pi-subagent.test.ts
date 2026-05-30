@@ -65,7 +65,7 @@ describe("pi-subagent", () => {
     session.dispose();
   }
 
-  async function createSession(options: { maxDepth?: number; maxWidth?: number } = {}) {
+  async function createSession(options: { maxWidth?: number } = {}) {
     const registration = registerFauxProvider({
       models: [{ id: "faux-thinker", name: "Faux Thinker", reasoning: true }],
     });
@@ -215,9 +215,8 @@ describe("pi-subagent", () => {
     expect(childModel?.id).toBe("faux-thinker");
     expect((childOptions as { reasoning?: string } | undefined)?.reasoning).toBe("high");
     expect(childContext?.systemPrompt).toContain("Explorer Subagent Role");
-    expect(childContext?.systemPrompt).toContain("delegation depth and width are bounded");
-    expect(childContext?.systemPrompt).not.toContain("max depth 2");
-    expect(childContext?.systemPrompt).not.toContain("max width 4");
+    expect(childContext?.systemPrompt).not.toContain("Subagent Delegation");
+    expect(childContext?.tools?.some((tool: { name?: string }) => tool.name === "Agent")).toBe(false);
     expect(JSON.stringify(childContext?.messages)).toContain("Search for the auth flow");
     expect(JSON.stringify(childContext?.messages)).not.toContain("Please delegate the auth search");
     expect(JSON.stringify(rootContinuationContext?.messages)).toContain("found auth.ts");
@@ -250,7 +249,7 @@ describe("pi-subagent", () => {
 
     expect(childContext?.systemPrompt).toContain("Project append marker must survive into subagents.");
     expect(childContext?.systemPrompt).toContain("Explorer Subagent Role");
-    expect(childContext?.systemPrompt).toContain("Subagent Delegation");
+    expect(childContext?.systemPrompt).not.toContain("Subagent Delegation");
 
     disposeSession(session);
   });
@@ -274,7 +273,7 @@ describe("pi-subagent", () => {
     await session.prompt("Delegate config research.");
 
     expect(childContext?.systemPrompt).not.toContain("Explorer Subagent Role");
-    expect(childContext?.systemPrompt).toContain("Subagent Delegation");
+    expect(childContext?.systemPrompt).not.toContain("Subagent Delegation");
     expect(JSON.stringify(childContext?.messages)).toContain("Inspect config loading.");
 
     disposeSession(session);
@@ -365,44 +364,27 @@ describe("pi-subagent", () => {
     disposeSession(session);
   });
 
-  it("keeps same-description parallel child progress nodes separate", async () => {
+  it("keeps same-description root parallel progress nodes separate", async () => {
     const { session, registration, model, modelRegistry } = await createSession();
     const tool = session.getToolDefinition("Agent") as any;
 
     registration.setResponses([
-      fauxAssistantMessage([
-        fauxToolCall("Agent", {
-          description: "Same audit",
-          prompt: "First nested task.",
-        }),
-        fauxToolCall("Agent", {
-          description: "Same audit",
-          prompt: "Second nested task.",
-        }),
-      ], { stopReason: "toolUse" }),
-      fauxAssistantMessage("first nested done"),
-      fauxAssistantMessage("second nested done"),
-      fauxAssistantMessage("parent done"),
+      fauxAssistantMessage("first root child done"),
     ]);
 
     const result = await tool.execute(
-      "parent-progress",
+      "root-progress-a",
       {
-        description: "Parent audit",
-        prompt: "Spawn two same-description nested agents.",
+        description: "Same audit",
+        prompt: "First root task.",
       },
       undefined,
       () => {},
       makeExecutionContext({ hasUI: true, model, modelRegistry, tui: true }),
     );
 
-    const children = result.details.progress?.children ?? [];
-    expect(children).toHaveLength(2);
-    expect(children.map((child: { description: string }) => child.description)).toEqual([
-      "Same audit",
-      "Same audit",
-    ]);
-    expect(new Set(children.map((child: { id: string }) => child.id)).size).toBe(2);
+    expect(result.details.progress?.id).toBe("root-progress-a");
+    expect(result.details.progress?.description).toBe("Same audit");
 
     disposeSession(session);
   });
@@ -462,34 +444,27 @@ describe("pi-subagent", () => {
     disposeSession(session);
   });
 
-  it("enforces maxDepth for nested Agent calls", async () => {
-    const { session, registration } = await createSession({ maxDepth: 1 });
-    let childContinuationContext: Context | undefined;
-    let rootContinuationContext: Context | undefined;
+  it("does not expose Agent to subagent sessions", async () => {
+    const { session, registration } = await createSession();
+    let childContext: Context | undefined;
 
     registration.setResponses([
       fauxAssistantMessage([fauxToolCall("Agent", {
-        description: "Outer search",
-        prompt: "Call a nested Agent for the next step.",
-      })], { stopReason: "toolUse" }),
-      fauxAssistantMessage([fauxToolCall("Agent", {
-        description: "Nested search",
-        prompt: "This nested call should be rejected by maxDepth.",
+        description: "Search",
+        prompt: "Report whether the Agent tool is available.",
       })], { stopReason: "toolUse" }),
       (context) => {
-        childContinuationContext = context;
-        return fauxAssistantMessage("nested depth rejection observed");
+        childContext = context;
+        const hasAgent = context.tools?.some((tool: { name?: string }) => tool.name === "Agent") ?? false;
+        return fauxAssistantMessage(hasAgent ? "Agent visible" : "Agent hidden");
       },
-      (context) => {
-        rootContinuationContext = context;
-        return fauxAssistantMessage("done");
-      },
+      fauxAssistantMessage("done"),
     ]);
 
-    await session.prompt("Run a nested Agent call.");
+    await session.prompt("Delegate once.");
 
-    expect(JSON.stringify(childContinuationContext?.messages)).toContain("Maximum subagent depth reached");
-    expect(JSON.stringify(rootContinuationContext?.messages)).toContain("nested depth rejection observed");
+    expect(childContext?.tools?.some((tool: { name?: string }) => tool.name === "Agent")).toBe(false);
+    expect(JSON.stringify(session.messages)).toContain("Agent hidden");
     expect(registration.getPendingResponseCount()).toBe(0);
 
     disposeSession(session);
@@ -509,8 +484,8 @@ describe("pi-subagent", () => {
     await session.prompt("Just say noted.");
 
     expect(rootContext?.systemPrompt).toContain("Subagent Delegation");
-    expect(rootContext?.systemPrompt).toContain("delegation depth and width are bounded");
-    expect(rootContext?.systemPrompt).not.toContain("max depth 2");
+    expect(rootContext?.systemPrompt).toContain("Subagents cannot launch other subagents");
+    expect(rootContext?.systemPrompt).toContain("Root-level parallel delegation is bounded");
     expect(rootContext?.systemPrompt).not.toContain("max width 4");
     expect(rootContext?.systemPrompt).toContain("Available agents");
     expect(rootContext?.systemPrompt).toContain("general-purpose: General-purpose agent for researching complex questions");
@@ -548,89 +523,6 @@ describe("pi-subagent", () => {
     expect(serialized).toContain("turn 1 child done");
     expect(serialized).toContain("turn 2 child done");
     expect(serialized).not.toContain("Maximum subagent width reached");
-
-    disposeSession(session);
-  });
-
-  it("isolates per-parent width budgets across nested subagents", async () => {
-    const { session, registration } = await createSession({ maxDepth: 2, maxWidth: 1 });
-
-    registration.setResponses([
-      fauxAssistantMessage(
-        [fauxToolCall("Agent", { description: "Outer", prompt: "Spawn one nested child." })],
-        { stopReason: "toolUse" },
-      ),
-      fauxAssistantMessage(
-        [fauxToolCall("Agent", { description: "Nested", prompt: "Inner work." })],
-        { stopReason: "toolUse" },
-      ),
-      fauxAssistantMessage("nested leaf done"),
-      fauxAssistantMessage("outer done"),
-      fauxAssistantMessage("root done"),
-    ]);
-
-    await session.prompt("Spawn outer with one nested child.");
-
-    const serialized = JSON.stringify(session.messages);
-    expect(serialized).toContain("outer done");
-    expect(serialized).not.toContain("Maximum subagent width reached");
-    expect(registration.getPendingResponseCount()).toBe(0);
-
-    disposeSession(session);
-  });
-
-  it("rejects all delegation when maxDepth is 0", async () => {
-    const { session, registration } = await createSession({ maxDepth: 0 });
-    let rootContinuationContext: Context | undefined;
-
-    registration.setResponses([
-      fauxAssistantMessage(
-        [fauxToolCall("Agent", { description: "Disabled", prompt: "Should be rejected." })],
-        { stopReason: "toolUse" },
-      ),
-      (context) => {
-        rootContinuationContext = context;
-        return fauxAssistantMessage("saw rejection");
-      },
-    ]);
-
-    await session.prompt("Try delegating with maxDepth=0.");
-
-    expect(JSON.stringify(rootContinuationContext?.messages)).toContain("Maximum subagent depth reached");
-    expect(registration.getPendingResponseCount()).toBe(0);
-
-    disposeSession(session);
-  });
-
-  it("allows nesting up to maxDepth and rejects beyond it", async () => {
-    const { session, registration } = await createSession({ maxDepth: 2, maxWidth: 4 });
-    let depth2Continuation: Context | undefined;
-
-    registration.setResponses([
-      fauxAssistantMessage(
-        [fauxToolCall("Agent", { description: "Depth1", prompt: "Spawn depth-2." })],
-        { stopReason: "toolUse" },
-      ),
-      fauxAssistantMessage(
-        [fauxToolCall("Agent", { description: "Depth2", prompt: "Try depth-3." })],
-        { stopReason: "toolUse" },
-      ),
-      fauxAssistantMessage(
-        [fauxToolCall("Agent", { description: "Depth3", prompt: "Should be rejected." })],
-        { stopReason: "toolUse" },
-      ),
-      (context) => {
-        depth2Continuation = context;
-        return fauxAssistantMessage("saw depth-3 rejection");
-      },
-      fauxAssistantMessage("depth-1 done"),
-      fauxAssistantMessage("root done"),
-    ]);
-
-    await session.prompt("Spawn three deep.");
-
-    expect(JSON.stringify(depth2Continuation?.messages)).toContain("Maximum subagent depth reached");
-    expect(registration.getPendingResponseCount()).toBe(0);
 
     disposeSession(session);
   });
@@ -677,7 +569,6 @@ describe("pi-subagent", () => {
       details: {
         description: "Find auth files",
         subagentType: "explorer" as const,
-        depth: 1,
         status,
         ...(status === "completed" ? { result: "ok" } : { error: "fail" }),
       },
@@ -714,7 +605,7 @@ describe("pi-subagent", () => {
     expect(executingCallText).toBe("");
   });
 
-  it("renders compact nested progress with rolling activity and descriptions", async () => {
+  it("renders compact progress with rolling activity and descriptions", async () => {
     let captured: any;
     const mockApi: any = {
       registerTool: (tool: any) => {
@@ -734,45 +625,15 @@ describe("pi-subagent", () => {
         details: {
           description: "Research repo",
           subagentType: "explorer" as const,
-          depth: 1,
           status: "running" as const,
           progress: {
             id: "root-progress",
             description: "Research repo",
             subagentType: "explorer" as const,
-            depth: 1,
             status: "running" as const,
             startedAt: now - 2000,
             activity: ["Read src/types.ts", "Read app.py", "Read config.yaml"],
             activityCount: 5,
-            children: [
-              {
-                id: "nested-progress",
-                description: "Nested audit",
-                subagentType: "general-purpose" as const,
-                depth: 2,
-                status: "completed" as const,
-                startedAt: now - 4000,
-                endedAt: now - 1000,
-                activity: ["checked nested files"],
-                activityCount: 1,
-                children: [],
-                result: "nested done",
-              },
-              {
-                id: "error-progress",
-                description: "",
-                subagentType: "general-purpose" as const,
-                depth: 2,
-                status: "error" as const,
-                startedAt: now - 5000,
-                endedAt: now - 2000,
-                activity: [],
-                activityCount: 0,
-                children: [],
-                error: "nested failed",
-              },
-            ],
           },
         },
       };
@@ -785,11 +646,6 @@ describe("pi-subagent", () => {
       expect(text).toContain("Read src/types.ts");
       expect(text).toContain("Read app.py");
       expect(text).toContain("Read config.yaml");
-      expect(text).toContain("Agent(general-purpose: Nested audit)");
-      expect(text).toContain("done 3s");
-      expect(text).toContain("checked nested files");
-      expect(text).toContain("Agent(general-purpose) error 3s");
-      expect(text).toContain("nested failed");
     } finally {
       dateNow.mockRestore();
     }
@@ -814,18 +670,15 @@ describe("pi-subagent", () => {
       details: {
         description: "Long tool call",
         subagentType: "general-purpose" as const,
-        depth: 1,
         status: "running" as const,
         progress: {
           id: "long-progress",
           description: "Long tool call",
           subagentType: "general-purpose" as const,
-          depth: 1,
           status: "running" as const,
           startedAt: Date.now(),
           activity: [longCommand],
           activityCount: 1,
-          children: [],
         },
       },
     };

@@ -15,9 +15,10 @@
 - Subagents start with a fresh conversation and the same working directory. Parent conversation messages and tool results are not inherited.
 - Subagents inherit the caller's current model and thinking level.
 - There is no permissions system in v1. Presets are prompt-specialized ordinary pi agents.
-- Nested subagents are allowed. Defaults: `maxDepth = 2`, `maxWidth = 4`.
-- Do not put exact depth/width values in the model-facing coordinator prompt. The prompt should say delegation is bounded; enforcement and exact rejection messages come from the tool.
-- No user-facing flags in v1. Limit overrides are only through `createSubagentExtension({ maxDepth, maxWidth })`.
+- Subagents cannot launch other subagents. Do not give child sessions the `Agent` tool or the coordinator prompt.
+- Root-level parallel delegation is allowed and bounded by `maxWidth = 4` by default.
+- Do not put exact width values in the model-facing coordinator prompt. The prompt should say root-level parallel delegation is bounded; enforcement and exact rejection messages come from the tool.
+- No user-facing flags in v1. Limit overrides are only through `createSubagentExtension({ maxWidth })`.
 - User-defined agents are future work. The main-agent prompt may mention that they are not supported yet.
 
 ## References Read
@@ -31,7 +32,6 @@
 
 Interactive tmux TUI runs use `deepseek/deepseek-v4-flash` with high thinking and isolated `--no-*` resource flags.
 
-- `depth-rerun`: validates nested foreground delegation through depth 4.
 - `width`: validates eight parallel foreground `explorer` delegations.
 - `proactive-multirepo-v3`: validates proactive parallel delegation for a two-repo auth comparison.
 - `proactive-fanout-v3`: validates proactive multi-lane delegation for TODO/FIXME/skipped-test search.
