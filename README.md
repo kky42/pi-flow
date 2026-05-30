@@ -15,16 +15,26 @@ Available agents:
 
 Fresh subagents start with their own conversation and the same working directory. The parent gets the final subagent report back as a tool result, then synthesizes the answer for the user.
 
-Recent comparison runs:
+Recent comparison run:
 
-| Case | Claude Code | pi deepseek-v4-flash |
-| --- | --- | --- |
-| explore this repo | 1 Agent(Explore) | 1 Agent(explorer) |
-| auth multi-repo comparison | 1 Agent | 3 Agent calls |
-| migration second opinion | 1 Agent(Explore) | 2 Agent(explorer) calls |
-| TODO/FIXME/skipped-test audit | 0 Agent, direct grep | 0 Agent, direct bash |
+✅ means the main agent proactively invoked a root subagent for that scenario. ❌ means no root subagent invocation was observed before completion or the tool-call cap.
 
-This is intentionally close to Claude Code's behavior: delegate when a specialized agent helps, and search directly when a simple grep/read path is clearer.
+| Scenario | Size | Claude Code | pi deepseek-v4-flash |
+| --- | --- | --- | --- |
+| Exploration | small, 3 files | ❌ | ❌ |
+| Exploration | medium, 34 files | ✅ | ✅ |
+| Exploration | large, 213 files | ❌ | ✅ |
+| Exploration | huge, 703 files | ❌ | ❌ |
+| Understanding / QA | small, 3 files | ❌ | ✅ |
+| Understanding / QA | medium, 34 files | ✅ | ✅ |
+| Understanding / QA | large, 213 files | ✅ | ❌ |
+| Understanding / QA | huge, 703 files | ❌ | ✅ |
+| Implementation | small, 3 files | ❌ | ✅ |
+| Implementation | medium, 34 files | ❌ | ❌ |
+| Implementation | large, 213 files | ❌ | ❌ |
+| Implementation | huge, 703 files | ❌ | ❌ |
+
+This table measures only the routing decision: whether the main agent chose to invoke a subagent. It does not score answer quality or task completion.
 
 ## Install
 
@@ -72,13 +82,12 @@ Run the main-agent behavior e2e matrix:
 npm run e2e
 ```
 
-This downloads fresh GitHub fixtures (`sindresorhus/ky` and `sindresorhus/got` by default), runs fresh `pi -p` sessions with ambient skills, extensions, prompt templates, themes, and context files disabled, then records Claude Code-style routing scenarios. The default pi settings are `deepseek/deepseek-v4-flash` with `--thinking high`.
+This downloads fresh GitHub fixtures across four size buckets (`octocat/Spoon-Knife`, `chalk/chalk`, `expressjs/express`, and `vuejs/core` by default), runs fresh `pi -p` sessions with ambient skills, extensions, prompt templates, themes, and context files disabled, then records Claude Code-style routing scenarios. The default pi settings are `deepseek/deepseek-v4-flash` with `--thinking high`. For observational scenarios, the runner stops an agent process as soon as a root subagent invocation is detected, because that is enough to record the main-agent delegation decision. It also stops after `--max-tool-calls` root tool calls, defaulting to `50`, so direct runs stay bounded. For pi the subagent signal is the `Agent` tool; for Claude Code this can be `Agent`, `Task`, or an agent-named tool advertised in the stream `init` event, such as `Explore`.
 
 - codebase exploration
-- review
-- simple codebase QA
-- small feature implementation
-- two-codebase comparison
+- codebase understanding / QA
+- small README implementation
+- small, medium, large, and huge fixture buckets
 
 To compare the same scenarios against Claude Code:
 
@@ -86,4 +95,4 @@ To compare the same scenarios against Claude Code:
 npm run e2e:compare-claude
 ```
 
-The Claude comparison uses `--model haiku --effort high` by default. If `DEEPSEEK_API_KEY` is exported or present in `.env`, the runner configures Claude Code with DeepSeek's Anthropic-compatible endpoint and maps `haiku` to `deepseek-v4-flash[1m]`; it also creates a temporary pi auth file for the same key. It writes a report under `/tmp`, shows `MATCH` or `DIFF` for each scenario, and treats timeouts or budget caps in observational scenarios as inconclusive by default. Add `-- --repeat 3` to repeat each task, `-- --strict-observed` when incomplete observational scenarios should fail the command, or `-- --strict-claude` when Claude-side failures should fail the command.
+The Claude comparison uses `--model haiku --effort high` by default and does not set a Claude budget cap unless `--claude-max-budget-usd` is provided. If `DEEPSEEK_API_KEY` is exported or present in `.env`, the runner configures Claude Code with DeepSeek's Anthropic-compatible endpoint and maps `haiku` to `deepseek-v4-flash[1m]`; it also creates a temporary pi auth file for the same key. It writes a report under `/tmp`, logs each scenario, and prints a ✅/❌ `useSubagent` summary table. Add `-- --repeat 3` to repeat each task, `-- --max-tool-calls 20` to lower the direct-run cap, `-- --timeout-ms 120000 --claude-timeout-ms 120000` when you want explicit wall-clock limits, `-- --strict-observed` when incomplete observational scenarios should fail the command, or `-- --strict-claude` when Claude-side failures should fail the command.
