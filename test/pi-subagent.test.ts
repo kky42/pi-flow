@@ -1,4 +1,4 @@
-import { mkdirSync, rmSync } from "node:fs";
+import { mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -203,6 +203,36 @@ describe("pi-subagent", () => {
     disposeSession(session);
   });
 
+  it("preserves discovered append system prompts in child sessions", async () => {
+    const piDir = join(cwd, ".pi");
+    mkdirSync(piDir, { recursive: true });
+    writeFileSync(join(piDir, "APPEND_SYSTEM.md"), "Project append marker must survive into subagents.");
+
+    const { session, registration } = await createSession();
+    let childContext: Context | undefined;
+
+    registration.setResponses([
+      fauxAssistantMessage([fauxToolCall("Agent", {
+        description: "Find auth files",
+        subagent_type: "explorer",
+        prompt: "Search for the auth flow and report key files.",
+      })], { stopReason: "toolUse" }),
+      (context) => {
+        childContext = context;
+        return fauxAssistantMessage("found auth.ts");
+      },
+      fauxAssistantMessage("reported to user"),
+    ]);
+
+    await session.prompt("Please delegate the auth search.");
+
+    expect(childContext?.systemPrompt).toContain("Project append marker must survive into subagents.");
+    expect(childContext?.systemPrompt).toContain("Explorer Subagent Role");
+    expect(childContext?.systemPrompt).toContain("Subagent Delegation");
+
+    disposeSession(session);
+  });
+
   it("does not append an extra role prompt for general-purpose subagents", async () => {
     const { session, registration } = await createSession();
     let childContext: Context | undefined;
@@ -286,6 +316,45 @@ describe("pi-subagent", () => {
     }
 
     expect(updateEvents).toEqual([]);
+
+    disposeSession(session);
+  });
+
+  it("does not start the child prompt when the tool signal is already aborted", async () => {
+    const { session, registration, model, modelRegistry } = await createSession();
+    const tool = session.getToolDefinition("Agent") as any;
+    const controller = new AbortController();
+    let childContext: Context | undefined;
+
+    registration.setResponses([
+      (context) => {
+        childContext = context;
+        return fauxAssistantMessage("should not run");
+      },
+    ]);
+
+    controller.abort();
+
+    const result = await tool.execute(
+      "pre-aborted-agent-call",
+      {
+        description: "Research config",
+        prompt: "Inspect config loading.",
+      },
+      controller.signal,
+      undefined,
+      {
+        hasUI: false,
+        cwd,
+        model,
+        modelRegistry,
+      },
+    );
+
+    expect(result.details.status).toBe("error");
+    expect(result.details.error).toContain("aborted before prompt start");
+    expect(childContext).toBeUndefined();
+    expect(registration.getPendingResponseCount()).toBe(1);
 
     disposeSession(session);
   });

@@ -407,7 +407,7 @@ async function runSubagent(
     cwd,
     agentDir,
     settingsManager,
-    appendSystemPrompt: appendPrompts,
+    appendSystemPromptOverride: (base) => [...base, ...appendPrompts],
   });
   await resourceLoader.reload();
 
@@ -437,7 +437,9 @@ async function runSubagent(
     abortHandler = () => {
       void session.abort();
     };
-    signal.addEventListener("abort", abortHandler, { once: true });
+    if (!signal.aborted) {
+      signal.addEventListener("abort", abortHandler, { once: true });
+    }
   }
 
   let lastProgressEmit = 0;
@@ -483,7 +485,13 @@ async function runSubagent(
     : undefined;
 
   try {
+    if (signal?.aborted) {
+      throw new Error("Subagent aborted before prompt start");
+    }
     await session.bindExtensions({});
+    if (signal?.aborted) {
+      throw new Error("Subagent aborted before prompt start");
+    }
     emitProgress();
     await session.prompt(params.prompt, { source: "extension" });
     const result = extractFinalAssistantText(session.messages) || "(no final text output)";
