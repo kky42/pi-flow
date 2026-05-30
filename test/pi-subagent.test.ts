@@ -122,6 +122,28 @@ describe("pi-subagent", () => {
     return stripAnsi(component.render(200).join("\n"));
   }
 
+  function makeExecutionContext({
+    hasUI,
+    model,
+    modelRegistry,
+    tui = false,
+  }: {
+    hasUI: boolean;
+    model: Model<string>;
+    modelRegistry: ModelRegistry;
+    tui?: boolean;
+  }) {
+    return {
+      hasUI,
+      cwd,
+      model,
+      modelRegistry,
+      ui: {
+        getAllThemes: () => (tui ? [{ name: "test", path: "test-theme.json" }] : []),
+      },
+    };
+  }
+
   it("registers the Claude-style Agent tool contract", async () => {
     const { session } = await createSession();
 
@@ -288,32 +310,21 @@ describe("pi-subagent", () => {
     const { session, registration, model, modelRegistry } = await createSession();
     const tool = session.getToolDefinition("Agent") as any;
     const updateEvents: unknown[] = [];
-    const originalArgv = process.argv.slice();
 
     registration.setResponses([
       fauxAssistantMessage("config found"),
     ]);
 
-    process.argv.push("--mode", "rpc");
-    try {
-      await tool.execute(
-        "rpc-agent-call",
-        {
-          description: "Research config",
-          prompt: "Inspect config loading.",
-        },
-        undefined,
-        (result: unknown) => updateEvents.push(result),
-        {
-          hasUI: true,
-          cwd,
-          model,
-          modelRegistry,
-        },
-      );
-    } finally {
-      process.argv.splice(0, process.argv.length, ...originalArgv);
-    }
+    await tool.execute(
+      "rpc-agent-call",
+      {
+        description: "Research config",
+        prompt: "Inspect config loading.",
+      },
+      undefined,
+      (result: unknown) => updateEvents.push(result),
+      makeExecutionContext({ hasUI: true, model, modelRegistry }),
+    );
 
     expect(updateEvents).toEqual([]);
 
@@ -343,12 +354,7 @@ describe("pi-subagent", () => {
       },
       controller.signal,
       undefined,
-      {
-        hasUI: false,
-        cwd,
-        model,
-        modelRegistry,
-      },
+      makeExecutionContext({ hasUI: false, model, modelRegistry }),
     );
 
     expect(result.details.status).toBe("error");
@@ -387,12 +393,7 @@ describe("pi-subagent", () => {
       },
       undefined,
       () => {},
-      {
-        hasUI: true,
-        cwd,
-        model,
-        modelRegistry,
-      },
+      makeExecutionContext({ hasUI: true, model, modelRegistry, tui: true }),
     );
 
     const children = result.details.progress?.children ?? [];

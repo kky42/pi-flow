@@ -61,22 +61,17 @@ const ACTIVITY_DISPLAY_PREVIEW_CHARS = 120;
 const PROGRESS_UPDATE_INTERVAL_MS = 250;
 const PROGRESS_STATUSES: SubagentProgressNode["status"][] = ["running", "completed", "rejected", "error"];
 
-function getCliMode(argv = process.argv): string | undefined {
-  for (let i = 0; i < argv.length; i++) {
-    const arg = argv[i];
-    if (arg === "--mode") {
-      return argv[i + 1];
-    }
-    if (arg.startsWith("--mode=")) {
-      return arg.slice("--mode=".length);
-    }
-  }
-  return undefined;
-}
-
 function shouldEnableProgress(ctx: ExtensionContext): boolean {
-  const mode = getCliMode();
-  return ctx.hasUI && mode !== "json" && mode !== "rpc";
+  if (!ctx.hasUI) {
+    return false;
+  }
+  try {
+    // RPC exposes ExtensionUIContext but has no TUI theme surface. Keep compact
+    // progress updates limited to the interactive TUI renderer.
+    return ctx.ui.getAllThemes().length > 0;
+  } catch {
+    return false;
+  }
 }
 
 function normalizeLimit(value: number | undefined, fallback: number, label: string): number {
