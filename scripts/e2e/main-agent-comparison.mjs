@@ -116,6 +116,7 @@ function parseArgs(argv) {
     claudeEffort: "high",
     claudeTimeoutMs: 0,
     claudeMaxBudgetUsd: undefined,
+    claudeExcludeDynamicSystemPromptSections: false,
   };
 
   for (let index = 0; index < argv.length; index += 1) {
@@ -134,6 +135,10 @@ function parseArgs(argv) {
     }
     if (arg === "--strict-observed") {
       options.strictObserved = true;
+      continue;
+    }
+    if (arg === "--claude-exclude-dynamic-system-prompt-sections") {
+      options.claudeExcludeDynamicSystemPromptSections = true;
       continue;
     }
     const readValue = () => {
@@ -203,6 +208,8 @@ Options:
   --claude-effort <level>        Claude Code effort (default: high)
   --claude-timeout-ms <ms>       per-Claude-scenario timeout; 0 disables (default: 0)
   --claude-max-budget-usd <usd>  optional Claude Code budget cap (default: unset)
+  --claude-exclude-dynamic-system-prompt-sections
+                                  opt into Claude Code prompt-cache mode; off by default
 `);
 }
 
@@ -341,6 +348,14 @@ function writePromptFile(sessionDir, scenario, kind) {
 }
 
 const CLAUDE_ALWAYS_SUBAGENT_TOOL_NAMES = new Set(["Agent", "Task"]);
+const CLAUDE_TASK_MANAGEMENT_TOOL_NAMES = new Set([
+  "TaskCreate",
+  "TaskGet",
+  "TaskList",
+  "TaskOutput",
+  "TaskStop",
+  "TaskUpdate",
+]);
 const CLAUDE_NON_DELEGATION_AGENT_NAMES = new Set(["claude"]);
 
 function textContainsPiAgentInvocation(text) {
@@ -624,6 +639,7 @@ function analyzePiTrace(filePath) {
 function analyzeClaudeTrace(filePath) {
   const toolCalls = {};
   const subagentToolCalls = {};
+  const taskManagementToolCalls = {};
   const taskStarts = [];
   const resultErrors = [];
   const finalTexts = [];
@@ -649,6 +665,9 @@ function analyzeClaudeTrace(filePath) {
         if (isClaudeSubagentToolUse(item, subagentToolNames)) {
           countTool(subagentToolCalls, item.name);
         }
+        if (CLAUDE_TASK_MANAGEMENT_TOOL_NAMES.has(item.name)) {
+          countTool(taskManagementToolCalls, item.name);
+        }
       }
       if (isRootMessage && item?.type === "text" && typeof item.text === "string" && message?.role === "assistant") {
         finalTexts.push(item.text);
@@ -663,6 +682,7 @@ function analyzeClaudeTrace(filePath) {
     filePath,
     toolCalls,
     subagentToolCalls,
+    taskManagementToolCalls,
     taskStarts: taskStarts.length,
     resultErrors,
     agentCalls,
@@ -756,9 +776,11 @@ async function runClaudeScenario(options, fixtures, scenario, repeatIndex) {
     "--permission-mode",
     "bypassPermissions",
     "--disable-slash-commands",
-    "--exclude-dynamic-system-prompt-sections",
     "--no-session-persistence",
   ];
+  if (options.claudeExcludeDynamicSystemPromptSections) {
+    args.push("--exclude-dynamic-system-prompt-sections");
+  }
   if (options.claudeMaxBudgetUsd) {
     args.push("--max-budget-usd", options.claudeMaxBudgetUsd);
   }

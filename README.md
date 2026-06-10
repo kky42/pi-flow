@@ -17,24 +17,24 @@ Fresh subagents start with their own conversation and the same working directory
 
 Recent comparison run:
 
-✅ means the main agent proactively invoked a root subagent for that scenario. ❌ means no root subagent invocation was observed before completion or the tool-call cap.
+✅ means the main agent proactively invoked a root subagent for that scenario. ❌ means no root subagent invocation was observed before completion or the tool-call cap. Both harnesses used DeepSeek V4 Pro: pi ran `deepseek/deepseek-v4-pro` with `--thinking high`; Claude Code `2.1.170` was invoked with `--model sonnet --effort high` against DeepSeek's Anthropic-compatible endpoint, resolving to `deepseek-v4-pro[1m]`.
 
-| Scenario | Size | Claude Code | pi deepseek-v4-flash |
+| Scenario | Size | Claude Code 2.1.170 deepseek-v4-pro[1m] | pi deepseek/deepseek-v4-pro |
 | --- | --- | --- | --- |
-| Exploration | small, 3 files | ❌ | ❌ |
-| Exploration | medium, 34 files | ✅ | ✅ |
+| Exploration | small, 3 files | ❌ | ✅ |
+| Exploration | medium, 34 files | ❌ | ✅ |
 | Exploration | large, 213 files | ❌ | ✅ |
-| Exploration | huge, 703 files | ❌ | ❌ |
+| Exploration | huge, 703 files | ❌ | ✅ |
 | Understanding / QA | small, 3 files | ❌ | ✅ |
-| Understanding / QA | medium, 34 files | ✅ | ✅ |
-| Understanding / QA | large, 213 files | ✅ | ❌ |
-| Understanding / QA | huge, 703 files | ❌ | ✅ |
+| Understanding / QA | medium, 34 files | ❌ | ❌ |
+| Understanding / QA | large, 213 files | ✅ | ✅ |
+| Understanding / QA | huge, 703 files | ✅ | ❌ |
 | Implementation | small, 3 files | ❌ | ✅ |
 | Implementation | medium, 34 files | ❌ | ❌ |
 | Implementation | large, 213 files | ❌ | ❌ |
-| Implementation | huge, 703 files | ❌ | ❌ |
+| Implementation | huge, 703 files | ❌ | ✅ |
 
-This table measures only the routing decision: whether the main agent chose to invoke a subagent. It does not score answer quality or task completion.
+This table measures only the routing decision: whether the main agent chose to invoke a subagent. It does not score answer quality or task completion. Source report: `/var/folders/xg/zjkd61716j76w0gl6s2vk85r0000gn/T/pi-subagent-main-agent-e2e-1781084243842/report.json`.
 
 ## Install
 
@@ -95,4 +95,4 @@ To compare the same scenarios against Claude Code:
 npm run e2e:compare-claude
 ```
 
-The Claude comparison uses `--model haiku --effort high` by default and does not set a Claude budget cap unless `--claude-max-budget-usd` is provided. If `DEEPSEEK_API_KEY` is exported or present in `.env`, the runner configures Claude Code with DeepSeek's Anthropic-compatible endpoint and maps `haiku` to `deepseek-v4-flash[1m]`; it also creates a temporary pi auth file for the same key. It writes a report under `/tmp`, logs each scenario, and prints a ✅/❌ `useSubagent` summary table. Add `-- --repeat 3` to repeat each task, `-- --max-tool-calls 20` to lower the direct-run cap, `-- --timeout-ms 120000 --claude-timeout-ms 120000` when you want explicit wall-clock limits, `-- --strict-observed` when incomplete observational scenarios should fail the command, or `-- --strict-claude` when Claude-side failures should fail the command.
+The Claude comparison uses `--model haiku --effort high` by default and does not set a Claude budget cap unless `--claude-max-budget-usd` is provided. If `DEEPSEEK_API_KEY` is exported or present in `.env`, the runner configures Claude Code with DeepSeek's Anthropic-compatible endpoint and maps `haiku` to `deepseek-v4-flash[1m]`; it also creates a temporary pi auth file for the same key. It writes a report under `/tmp`, logs each scenario, and prints a ✅/❌ `useSubagent` summary table. By default the Claude run keeps Claude Code's dynamic system prompt sections enabled so subagent routing guidance matches normal Claude Code behavior; add `-- --claude-exclude-dynamic-system-prompt-sections` only when you intentionally want Claude's prompt-cache mode. Add `-- --repeat 3` to repeat each task, `-- --max-tool-calls 20` to lower the direct-run cap, `-- --timeout-ms 120000 --claude-timeout-ms 120000` when you want explicit wall-clock limits, `-- --strict-observed` when incomplete observational scenarios should fail the command, or `-- --strict-claude` when Claude-side failures should fail the command.
