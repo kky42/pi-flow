@@ -63,6 +63,7 @@ type AgentToolResult = ReturnType<typeof textResult>;
 const MAX_ACTIVITY_LINES = 3;
 const ACTIVITY_DISPLAY_PREVIEW_CHARS = 120;
 const PROGRESS_UPDATE_INTERVAL_MS = 250;
+const PROGRESS_HEARTBEAT_INTERVAL_MS = 1000;
 const PROGRESS_STATUSES: SubagentProgressNode["status"][] = ["running", "completed", "rejected", "error"];
 
 function shouldEnableProgress(ctx: ExtensionContext): boolean {
@@ -497,6 +498,7 @@ async function runSubagent(
 
   let lastProgressEmit = 0;
   let pendingProgressTimer: ReturnType<typeof setTimeout> | undefined;
+  let progressHeartbeatTimer: ReturnType<typeof setInterval> | undefined;
   const emitProgress = () => {
     if (!progress || !onProgress) {
       return;
@@ -528,6 +530,22 @@ async function runSubagent(
       }, PROGRESS_UPDATE_INTERVAL_MS - elapsed);
     }
   };
+  const startProgressHeartbeat = () => {
+    if (!progress || !onProgress || progressHeartbeatTimer) {
+      return;
+    }
+    progressHeartbeatTimer = setInterval(() => {
+      emitProgressSoon();
+    }, PROGRESS_HEARTBEAT_INTERVAL_MS);
+    progressHeartbeatTimer.unref?.();
+  };
+  const stopProgressHeartbeat = () => {
+    if (!progressHeartbeatTimer) {
+      return;
+    }
+    clearInterval(progressHeartbeatTimer);
+    progressHeartbeatTimer = undefined;
+  };
 
   const unsubscribe = progress
     ? session.subscribe((event) => {
@@ -548,6 +566,7 @@ async function runSubagent(
       throw new Error("Subagent aborted before prompt start");
     }
     emitProgress();
+    startProgressHeartbeat();
     await session.prompt(params.prompt, { source: "extension" });
     const result = extractFinalAssistantText(session.messages) || "(no final text output)";
     const usage = getSubagentUsage(session);
@@ -586,6 +605,7 @@ async function runSubagent(
     if (pendingProgressTimer) {
       clearTimeout(pendingProgressTimer);
     }
+    stopProgressHeartbeat();
     unsubscribe?.();
     if (signal && abortHandler) {
       signal.removeEventListener("abort", abortHandler);
