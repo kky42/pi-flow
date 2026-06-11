@@ -21,6 +21,7 @@ import {
 } from "../node_modules/@earendil-works/pi-coding-agent/node_modules/@earendil-works/pi-ai/dist/index.js";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createSubagentExtension } from "../src/pi-subagent.ts";
+import { getSubagentProfiles, loadBuiltinSubagentProfiles } from "../src/profiles.ts";
 
 const packageRoot = dirname(dirname(fileURLToPath(import.meta.url)));
 // pi-coding-agent 0.77.0 carries its own pi-ai instance; faux providers must register there.
@@ -31,6 +32,7 @@ describe("pi-subagent", () => {
   let agentDir: string;
   let registrations: Array<{ unregister: () => void }>;
   let sessions: Array<{ dispose: () => void }>;
+  let originalAgentDirEnv: string | undefined;
 
   beforeEach(() => {
     tempDir = join(tmpdir(), `pi-subagent-test-${Date.now()}-${Math.random().toString(36).slice(2)}`);
@@ -38,6 +40,8 @@ describe("pi-subagent", () => {
     agentDir = join(tempDir, "agent");
     mkdirSync(cwd, { recursive: true });
     mkdirSync(agentDir, { recursive: true });
+    originalAgentDirEnv = process.env.PI_CODING_AGENT_DIR;
+    process.env.PI_CODING_AGENT_DIR = agentDir;
     registrations = [];
     sessions = [];
   });
@@ -48,6 +52,11 @@ describe("pi-subagent", () => {
     }
     for (const registration of registrations.splice(0)) {
       registration.unregister();
+    }
+    if (originalAgentDirEnv === undefined) {
+      delete process.env.PI_CODING_AGENT_DIR;
+    } else {
+      process.env.PI_CODING_AGENT_DIR = originalAgentDirEnv;
     }
     rmSync(tempDir, { recursive: true, force: true });
   });
@@ -275,6 +284,143 @@ describe("pi-subagent", () => {
     expect(childContext?.systemPrompt).not.toContain("Explorer Subagent Role");
     expect(childContext?.systemPrompt).not.toContain("Subagent Delegation");
     expect(JSON.stringify(childContext?.messages)).toContain("Inspect config loading.");
+
+    disposeSession(session);
+  });
+
+  it("loads built-in subagent profiles from bundled markdown files", () => {
+    const profiles = loadBuiltinSubagentProfiles(join(packageRoot, "src", "subagents"));
+
+    expect(profiles.get("general-purpose")).toMatchObject({
+      name: "general-purpose",
+      description: "General-purpose agent for researching complex questions, searching for code, and executing multi-step tasks.",
+      systemPrompt: undefined,
+    });
+    expect(profiles.get("explorer")?.description).toContain("Fast read-only search agent");
+    expect(profiles.get("explorer")?.systemPrompt).toContain("Explorer Subagent Role");
+  });
+
+  it("loads custom subagent profiles from filename-derived names", () => {
+    const subagentsDir = join(agentDir, "subagents");
+    mkdirSync(subagentsDir, { recursive: true });
+    writeFileSync(join(subagentsDir, "code-reviewer.md"), `---
+description: Reviews code changes for correctness.
+model: inherit
+thinking: low
+---
+
+You are a careful code reviewer.`);
+    writeFileSync(join(subagentsDir, "Bad Name.md"), `---
+description: Invalid filename.
+---
+
+Ignored.`);
+    writeFileSync(join(subagentsDir, "missing-description.md"), "No frontmatter.");
+    writeFileSync(join(subagentsDir, "bad-thinking.md"), `---
+description: Invalid thinking.
+thinking: enormous
+---
+
+Ignored.`);
+    writeFileSync(join(subagentsDir, "bad-model.md"), `---
+description: Invalid model.
+model: not-a-provider-model
+---
+
+Ignored.`);
+
+    const profiles = getSubagentProfiles(agentDir);
+
+    expect(profiles.get("code-reviewer")).toMatchObject({
+      name: "code-reviewer",
+      description: "Reviews code changes for correctness.",
+      thinking: "low",
+      systemPrompt: "You are a careful code reviewer.",
+    });
+    expect(profiles.has("Bad Name")).toBe(false);
+    expect(profiles.has("missing-description")).toBe(false);
+    expect(profiles.has("bad-thinking")).toBe(false);
+    expect(profiles.has("bad-model")).toBe(false);
+    expect(profiles.has("general-purpose")).toBe(true);
+    expect(profiles.has("explorer")).toBe(true);
+  });
+
+  it("runs a custom subagent with appended body prompt and thinking override", async () => {
+    const subagentsDir = join(agentDir, "subagents");
+    mkdirSync(subagentsDir, { recursive: true });
+    writeFileSync(join(subagentsDir, "code-reviewer.md"), `---
+description: Reviews code changes for correctness.
+thinking: low
+---
+
+Custom reviewer prompt marker.`);
+
+    const { session, registration } = await createSession();
+    let childContext: Context | undefined;
+    let childOptions: SimpleStreamOptions | undefined;
+
+    registration.setResponses([
+      fauxAssistantMessage([fauxToolCall("Agent", {
+        description: "Review changes",
+        subagent_type: "code-reviewer",
+        prompt: "Review the latest diff.",
+      })], { stopReason: "toolUse" }),
+      (context, options) => {
+        childContext = context;
+        childOptions = options;
+        return fauxAssistantMessage("review complete");
+      },
+      fauxAssistantMessage("reported"),
+    ]);
+
+    await session.prompt("Delegate code review.");
+
+    expect(childContext?.systemPrompt).toContain("Custom reviewer prompt marker.");
+    expect(childContext?.systemPrompt).not.toContain("Explorer Subagent Role");
+    expect((childOptions as { reasoning?: string } | undefined)?.reasoning).toBe("low");
+    expect(JSON.stringify(childContext?.messages)).toContain("Review the latest diff.");
+
+    disposeSession(session);
+  });
+
+  it("does not count an unavailable-profile-model rejection toward maxWidth", async () => {
+    const subagentsDir = join(agentDir, "subagents");
+    mkdirSync(subagentsDir, { recursive: true });
+    writeFileSync(join(subagentsDir, "bad-model-agent.md"), `---
+description: Uses an unavailable registered model.
+model: ghost/nope
+---
+
+This should not be advertised or launched.`);
+
+    const { session, registration } = await createSession({ maxWidth: 1 });
+    let rootContinuationContext: Context | undefined;
+
+    registration.setResponses([
+      fauxAssistantMessage([
+        fauxToolCall("Agent", {
+          description: "Bad model first",
+          subagent_type: "bad-model-agent",
+          prompt: "This should be rejected before launch.",
+        }),
+        fauxToolCall("Agent", {
+          description: "Valid second",
+          prompt: "This valid child should still run.",
+        }),
+      ], { stopReason: "toolUse" }),
+      fauxAssistantMessage("valid child ran"),
+      (context) => {
+        rootContinuationContext = context;
+        return fauxAssistantMessage("done");
+      },
+    ]);
+
+    await session.prompt("Run one bad and one good subagent.");
+
+    const serialized = JSON.stringify(rootContinuationContext?.messages);
+    expect(serialized).toContain("Unknown subagent_type");
+    expect(serialized).toContain("valid child ran");
+    expect(serialized).not.toContain("Maximum subagent width reached");
 
     disposeSession(session);
   });
@@ -644,7 +790,7 @@ describe("pi-subagent", () => {
         { executionStarted: false },
       ),
     );
-    expect(unknownCallText).toContain("unknown");
+    expect(unknownCallText).toContain("ghost");
 
     const executingCallText = renderToText(
       captured.renderCall(

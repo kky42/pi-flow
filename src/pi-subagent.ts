@@ -9,6 +9,7 @@ import {
   type ExtensionAPI,
   type ExtensionContext,
   type ExtensionFactory,
+  type ModelRegistry,
   type Theme,
   type ToolDefinition,
 } from "@earendil-works/pi-coding-agent";
@@ -18,10 +19,11 @@ import {
   AGENT_PROMPT_GUIDELINES,
   AGENT_PROMPT_SNIPPET,
   buildCoordinatorPrompt,
-  getPresetAppendPrompt,
 } from "./prompts.ts";
+import { getSubagentProfiles } from "./profiles.ts";
 import type {
   SubagentExtensionOptions,
+  SubagentProfile,
   SubagentProgressNode,
   SubagentToolDetails,
   SubagentType,
@@ -29,7 +31,6 @@ import type {
 } from "./types.ts";
 
 const DEFAULT_MAX_WIDTH = 12;
-const ALLOWED_SUBAGENTS: SubagentType[] = ["general-purpose", "explorer"];
 
 const agentToolParameters = Type.Object({
   description: Type.String({
@@ -40,7 +41,7 @@ const agentToolParameters = Type.Object({
   }),
   subagent_type: Type.Optional(
     Type.String({
-      description: `The preset subagent to use. Allowed values: ${ALLOWED_SUBAGENTS.join(", ")}. Defaults to general-purpose.`,
+      description: "The subagent profile to use. Defaults to general-purpose. Custom profiles are loaded from ~/.pi/agent/subagents/<agent-name>.md.",
     }),
   ),
 });
@@ -87,11 +88,42 @@ function normalizeLimit(value: number | undefined, fallback: number, label: stri
   return value;
 }
 
-function normalizeSubagentType(value: string | undefined): SubagentType | undefined {
+function normalizeSubagentType(value: string | undefined): SubagentType {
   if (value === undefined || value.trim() === "") {
     return "general-purpose";
   }
-  return ALLOWED_SUBAGENTS.includes(value as SubagentType) ? (value as SubagentType) : undefined;
+  return value.trim();
+}
+
+function formatProfileNames(profiles: Map<string, SubagentProfile>): string {
+  return [...profiles.keys()].join(", ");
+}
+
+function findProfileModel(profile: SubagentProfile, modelRegistry: ModelRegistry): ExtensionContext["model"] {
+  if (!profile.model) {
+    return undefined;
+  }
+  const separator = profile.model.indexOf("/");
+  if (separator === -1) {
+    return undefined;
+  }
+  return modelRegistry.find(profile.model.slice(0, separator), profile.model.slice(separator + 1));
+}
+
+function resolveProfileModel(profile: SubagentProfile, ctx: ExtensionContext): ExtensionContext["model"] {
+  return profile.model ? findProfileModel(profile, ctx.modelRegistry) : ctx.model;
+}
+
+function filterProfilesForModelRegistry(
+  profiles: Map<string, SubagentProfile>,
+  modelRegistry: ModelRegistry | undefined,
+): Map<string, SubagentProfile> {
+  if (!modelRegistry) {
+    return profiles;
+  }
+  return new Map(
+    [...profiles].filter(([, profile]) => !profile.model || Boolean(findProfileModel(profile, modelRegistry))),
+  );
 }
 
 function textResult(text: string, details: SubagentToolDetails) {
@@ -117,7 +149,7 @@ function isSubagentProgressNode(value: unknown): value is SubagentProgressNode {
   return (
     typeof value.id === "string" &&
     typeof value.description === "string" &&
-    (subagentType === "unknown" || ALLOWED_SUBAGENTS.includes(subagentType as SubagentType)) &&
+    typeof subagentType === "string" &&
     isProgressStatus(value.status) &&
     Number.isFinite(value.startedAt) &&
     Array.isArray(value.activity) &&
@@ -411,31 +443,23 @@ function getSubagentUsage(session: {
 async function runSubagent(
   toolCallId: string,
   params: AgentToolParams,
-  subagentType: SubagentType,
+  profile: SubagentProfile,
+  model: NonNullable<ExtensionContext["model"]>,
   state: DelegationState,
   options: CreateAgentToolOptions,
   signal: AbortSignal | undefined,
   ctx: ExtensionContext,
   onProgress: ((result: AgentToolResult) => void) | undefined,
 ): Promise<ReturnType<typeof textResult>> {
+  const subagentType = profile.name;
   const progress =
     state.progressEnabled ? createProgressNode(toolCallId, params, subagentType) : undefined;
-
-  if (!ctx.model) {
-    return textResult("Cannot launch subagent: no model is selected.", {
-      description: params.description,
-      subagentType,
-      status: "rejected",
-      error: "No model is selected",
-      ...(progress ? { progress: { ...progress, status: "rejected", error: "No model is selected" } } : {}),
-    });
-  }
 
   const agentDir = getAgentDir();
   const cwd = ctx.cwd;
   const settingsManager = SettingsManager.create(cwd, agentDir);
   const appendPrompts = [
-    getPresetAppendPrompt(subagentType),
+    profile.systemPrompt,
   ].filter((prompt): prompt is string => Boolean(prompt));
   const resourceLoader = new DefaultResourceLoader({
     cwd,
@@ -452,8 +476,8 @@ async function runSubagent(
   const { session } = await createAgentSession({
     cwd,
     agentDir,
-    model: ctx.model,
-    thinkingLevel: options.getThinkingLevel(),
+    model,
+    thinkingLevel: profile.thinking ?? options.getThinkingLevel(),
     modelRegistry: ctx.modelRegistry,
     settingsManager,
     sessionManager: SessionManager.inMemory(cwd),
@@ -577,7 +601,7 @@ function createAgentTool(
   return defineTool({
     name: "Agent",
     label: "Agent",
-    description: `Launch a fresh subagent. Available agents: ${ALLOWED_SUBAGENTS.join(", ")}. Prompts must be self-contained.`,
+    description: "Launch a fresh subagent. Available agents include built-ins and custom profiles from ~/.pi/agent/subagents/*.md. Prompts must be self-contained.",
     promptSnippet: AGENT_PROMPT_SNIPPET,
     promptGuidelines: AGENT_PROMPT_GUIDELINES,
     parameters: agentToolParameters,
@@ -587,10 +611,12 @@ function createAgentTool(
         ...state,
         progressEnabled: state.progressEnabled || shouldEnableProgress(ctx),
       };
+      const profiles = filterProfilesForModelRegistry(getSubagentProfiles(getAgentDir()), ctx.modelRegistry);
       const subagentType = normalizeSubagentType(params.subagent_type);
-      if (!subagentType) {
+      const profile = profiles.get(subagentType);
+      if (!profile) {
         return textResult(
-          `Unknown subagent_type "${params.subagent_type}". Allowed values: ${ALLOWED_SUBAGENTS.join(", ")}.`,
+          `Unknown subagent_type "${params.subagent_type}". Available agents: ${formatProfileNames(profiles)}.`,
           {
             description: params.description,
             subagentType: "unknown",
@@ -598,6 +624,17 @@ function createAgentTool(
             error: "Unknown subagent_type",
           },
         );
+      }
+
+      const model = resolveProfileModel(profile, ctx);
+      if (!model) {
+        const error = profile.model ? `Profile model not found: ${profile.model}` : "No model is selected";
+        return textResult(`Cannot launch subagent: ${error}.`, {
+          description: params.description,
+          subagentType,
+          status: "rejected",
+          error,
+        });
       }
 
       if (state.childCount >= effectiveState.maxWidth) {
@@ -617,7 +654,8 @@ function createAgentTool(
         return await runSubagent(
           toolCallId,
           params,
-          subagentType,
+          profile,
+          model,
           effectiveState,
           options,
           signal,
@@ -632,7 +670,7 @@ function createAgentTool(
       if (context.executionStarted) {
         return new Text("", 0, 0);
       }
-      const subagentType = normalizeSubagentType(args.subagent_type) ?? "unknown";
+      const subagentType = normalizeSubagentType(args.subagent_type);
       const description = typeof args.description === "string" ? args.description.trim() : "";
       return new Text(
         `${theme.bold("Agent")} ${theme.fg("muted", subagentType)}${description ? ` ${theme.fg("dim", description)}` : ""}`,
@@ -677,7 +715,10 @@ export function createSubagentExtension(options: SubagentExtensionOptions = {}):
       }
       rootState.childCount = 0;
       return {
-        systemPrompt: `${event.systemPrompt}\n\n${buildCoordinatorPrompt()}`,
+        systemPrompt: `${event.systemPrompt}\n\n${buildCoordinatorPrompt(filterProfilesForModelRegistry(
+          getSubagentProfiles(getAgentDir()),
+          (pi as unknown as { modelRegistry?: ModelRegistry }).modelRegistry,
+        ))}`,
       };
     });
   };

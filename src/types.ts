@@ -1,4 +1,13 @@
-export type SubagentType = "general-purpose" | "explorer";
+export type SubagentType = string;
+export type ThinkingLevel = "off" | "minimal" | "low" | "medium" | "high" | "xhigh";
+
+export interface SubagentProfile {
+  name: string;
+  description: string;
+  model?: string;
+  thinking?: ThinkingLevel;
+  systemPrompt?: string;
+}
 
 export interface SubagentExtensionOptions {
   maxWidth?: number;

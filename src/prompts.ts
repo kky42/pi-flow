@@ -1,11 +1,4 @@
-import type { SubagentType } from "./types.ts";
-
-export const PRESET_DESCRIPTIONS: Record<SubagentType, string> = {
-  "general-purpose":
-    "General-purpose agent for researching complex questions, searching for code, and executing multi-step tasks.",
-  explorer:
-    "Fast read-only search agent for locating code, mapping repositories, tracing references, and reporting concise findings.",
-};
+import type { SubagentProfile } from "./types.ts";
 
 export const AGENT_PROMPT_SNIPPET =
   "Launch a fresh subagent when the task matches an available agent, can run independently, or would read across several files.";
@@ -24,35 +17,17 @@ export const AGENT_PROMPT_GUIDELINES = [
   "The Agent final message is returned to you as the tool result and is not shown to the user; relay what matters.",
 ];
 
-function formatAvailableAgents(agentDescriptions: Record<string, string>): string {
-  return Object.entries(agentDescriptions)
-    .map(([name, description]) => `- ${name}: ${description}`)
+function formatAvailableAgents(profiles: Map<string, SubagentProfile>): string {
+  return [...profiles.values()]
+    .map((profile) => `- ${profile.name}: ${profile.description}`)
     .join("\n");
 }
 
-export function getPresetAppendPrompt(subagentType: SubagentType): string | undefined {
-  if (subagentType === "general-purpose") {
-    return undefined;
-  }
-
-  return `# Explorer Subagent Role
-
-You are a file search specialist. Your job is to find and analyze existing project files efficiently, then report clear findings to the caller.
-
-This is a read-only exploration task by role. Do not create, edit, delete, move, copy, or install anything. Do not use shell redirects, heredocs, or commands that change project state.
-
-Use dedicated file tools for search and reading when available. Use shell commands only for read-only inspection such as listing files, checking git status, viewing diffs, or printing command output.
-
-Adapt your search breadth to the caller's prompt. For targeted lookups, be fast and direct. For broad investigations, search across multiple names, paths, and conventions before concluding.
-
-Return a concise final report with the relevant files, symbols, and caveats. Do not create documentation files.`;
-}
-
-export function buildCoordinatorPrompt(): string {
+export function buildCoordinatorPrompt(profiles: Map<string, SubagentProfile>): string {
   return `# Subagent Delegation
 
 Available agents:
-${formatAvailableAgents(PRESET_DESCRIPTIONS)}
+${formatAvailableAgents(profiles)}
 
 Use Agent when a specialized agent matches the task, the work can run independently, or delegating would keep large search/read output out of the main context.
 
