@@ -43,6 +43,30 @@ function parseModel(value: unknown): string | undefined | "invalid" {
   return model;
 }
 
+function parseToolList(value: unknown): string[] | "invalid" {
+  if (value === undefined || value === null) {
+    return [];
+  }
+  const rawValues = typeof value === "string" ? value.split(",") : Array.isArray(value) ? value : "invalid";
+  if (rawValues === "invalid") {
+    return "invalid";
+  }
+  const tools: string[] = [];
+  const seen = new Set<string>();
+  for (const rawValue of rawValues) {
+    if (typeof rawValue !== "string") {
+      return "invalid";
+    }
+    const tool = rawValue.trim();
+    if (!tool || seen.has(tool)) {
+      continue;
+    }
+    seen.add(tool);
+    tools.push(tool);
+  }
+  return tools;
+}
+
 function parseProfileFile(filePath: string, name: string, options: { requireBody: boolean }): SubagentProfile | undefined {
   let content: string;
   try {
@@ -62,8 +86,11 @@ function parseProfileFile(filePath: string, name: string, options: { requireBody
   const body = parsed.body.trim();
   const model = parseModel(parsed.frontmatter.model);
   const thinking = parseThinking(parsed.frontmatter.thinking);
+  const tools = Object.prototype.hasOwnProperty.call(parsed.frontmatter, "tools")
+    ? parseToolList(parsed.frontmatter.tools)
+    : undefined;
 
-  if (!description || model === "invalid" || thinking === "invalid" || (options.requireBody && !body)) {
+  if (!description || model === "invalid" || thinking === "invalid" || tools === "invalid" || (options.requireBody && !body)) {
     return undefined;
   }
 
@@ -72,6 +99,7 @@ function parseProfileFile(filePath: string, name: string, options: { requireBody
     description,
     model,
     thinking,
+    tools,
     systemPrompt: body || undefined,
   };
 }

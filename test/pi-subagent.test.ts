@@ -153,6 +153,12 @@ describe("pi-subagent", () => {
     };
   }
 
+  function getToolNames(context: Context | undefined): string[] {
+    return [...new Set((context?.tools ?? [])
+      .map((tool: { name?: string } | undefined) => tool?.name)
+      .filter((name): name is string => typeof name === "string"))].sort();
+  }
+
   it("registers the Claude-style Agent tool contract", async () => {
     const { session } = await createSession();
 
@@ -225,7 +231,7 @@ describe("pi-subagent", () => {
     expect((childOptions as { reasoning?: string } | undefined)?.reasoning).toBe("high");
     expect(childContext?.systemPrompt).toContain("Explorer Subagent Role");
     expect(childContext?.systemPrompt).not.toContain("Subagent Delegation");
-    expect(childContext?.tools?.some((tool: { name?: string }) => tool.name === "Agent")).toBe(false);
+    expect(getToolNames(childContext)).toEqual(["bash", "find", "grep", "ls", "read"]);
     expect(JSON.stringify(childContext?.messages)).toContain("Search for the auth flow");
     expect(JSON.stringify(childContext?.messages)).not.toContain("Please delegate the auth search");
     expect(JSON.stringify(rootContinuationContext?.messages)).toContain("found auth.ts");
@@ -295,8 +301,13 @@ describe("pi-subagent", () => {
       name: "general-purpose",
       description: "General-purpose agent for researching complex questions, searching for code, and executing multi-step tasks.",
       systemPrompt: undefined,
+      tools: undefined,
     });
-    expect(profiles.get("explorer")?.description).toContain("Fast read-only search agent");
+    expect(profiles.get("explorer")).toMatchObject({
+      name: "explorer",
+      description: expect.stringContaining("Fast read-only search agent"),
+      tools: ["read", "grep", "find", "ls", "bash"],
+    });
     expect(profiles.get("explorer")?.systemPrompt).toContain("Explorer Subagent Role");
   });
 
@@ -305,6 +316,7 @@ describe("pi-subagent", () => {
     mkdirSync(subagentsDir, { recursive: true });
     writeFileSync(join(subagentsDir, "code-reviewer.md"), `---
 description: Reviews code changes for correctness.
+tools: read, bash
 model: inherit
 thinking: low
 ---
@@ -334,6 +346,7 @@ Ignored.`);
     expect(profiles.get("code-reviewer")).toMatchObject({
       name: "code-reviewer",
       description: "Reviews code changes for correctness.",
+      tools: ["read", "bash"],
       thinking: "low",
       systemPrompt: "You are a careful code reviewer.",
     });
@@ -350,6 +363,7 @@ Ignored.`);
     mkdirSync(subagentsDir, { recursive: true });
     writeFileSync(join(subagentsDir, "code-reviewer.md"), `---
 description: Reviews code changes for correctness.
+tools: read, bash
 thinking: low
 ---
 
@@ -377,8 +391,42 @@ Custom reviewer prompt marker.`);
 
     expect(childContext?.systemPrompt).toContain("Custom reviewer prompt marker.");
     expect(childContext?.systemPrompt).not.toContain("Explorer Subagent Role");
+    expect(getToolNames(childContext)).toEqual(["bash", "read"]);
     expect((childOptions as { reasoning?: string } | undefined)?.reasoning).toBe("low");
     expect(JSON.stringify(childContext?.messages)).toContain("Review the latest diff.");
+
+    disposeSession(session);
+  });
+
+  it("uses the default child-session tools when a subagent profile omits tools", async () => {
+    const subagentsDir = join(agentDir, "subagents");
+    mkdirSync(subagentsDir, { recursive: true });
+    writeFileSync(join(subagentsDir, "default-tools.md"), `---
+description: Uses the default tool set.
+---
+
+Default tools prompt marker.`);
+
+    const { session, registration } = await createSession();
+    let childContext: Context | undefined;
+
+    registration.setResponses([
+      fauxAssistantMessage([fauxToolCall("Agent", {
+        description: "Default tools",
+        subagent_type: "default-tools",
+        prompt: "Inspect the available child-session tools.",
+      })], { stopReason: "toolUse" }),
+      (context) => {
+        childContext = context;
+        return fauxAssistantMessage("default tools inspected");
+      },
+      fauxAssistantMessage("reported"),
+    ]);
+
+    await session.prompt("Delegate a default-tools subagent.");
+
+    expect(childContext?.systemPrompt).toContain("Default tools prompt marker.");
+    expect(getToolNames(childContext)).toEqual(["bash", "edit", "read", "write"]);
 
     disposeSession(session);
   });

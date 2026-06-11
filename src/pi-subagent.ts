@@ -484,6 +484,7 @@ async function runSubagent(
     sessionManager: SessionManager.inMemory(cwd),
     resourceLoader,
     excludeTools: ["Agent"],
+    ...(profile.tools !== undefined ? { tools: profile.tools } : {}),
   });
 
   let abortHandler: (() => void) | undefined;

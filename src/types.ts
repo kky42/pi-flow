@@ -6,6 +6,7 @@ export interface SubagentProfile {
   description: string;
   model?: string;
   thinking?: ThinkingLevel;
+  tools?: string[];
   systemPrompt?: string;
 }
 

@@ -67,6 +67,7 @@ Define subagents as markdown files. Built-in definitions live in `src/subagents/
 ```md
 ---
 description: Reviews code changes for correctness and maintainability.
+tools: read, grep, find, ls, bash
 model: inherit
 thinking: high
 ---
@@ -77,11 +78,12 @@ You are a careful code reviewer. Focus on correctness, tests, regressions, and m
 Fields:
 
 - `description` is required and is shown in the available-agent roster.
+- `tools` is optional; when present, it becomes the child-session tool allowlist for the subagent. Omit it to keep the default child-session tools. Tool names can target built-ins (`read`, `bash`, `edit`, `write`, `grep`, `find`, `ls`) and any custom or extension tools loaded into that child session; `Agent` is always stripped from child sessions.
 - `model` is optional; omit it or set `inherit` to use the caller's model; explicit values must use exact `provider/model-id` syntax.
 - `thinking` is optional; omit it or set `inherit` to use the caller's thinking level.
 - The markdown body is required and is appended to the child agent's system prompt.
 
-Files are ignored when the filename is not a valid lowercase kebab-case agent name, the frontmatter is invalid, `description` is missing, the body is empty, `model` is malformed, or `thinking` is not one of `off`, `minimal`, `low`, `medium`, `high`, or `xhigh`. Profiles with syntactically valid but unavailable `model` values are not advertised in the active agent roster.
+Files are ignored when the filename is not a valid lowercase kebab-case agent name, the frontmatter is invalid, `description` is missing, the body is empty, `model` is malformed, `tools` is malformed, or `thinking` is not one of `off`, `minimal`, `low`, `medium`, `high`, or `xhigh`. Profiles with syntactically valid but unavailable `model` values are not advertised in the active agent roster.
 
 ## Notes
 
@@ -89,7 +91,7 @@ Files are ignored when the filename is not a valid lowercase kebab-case agent na
 - Root-level parallel delegation is supported and bounded by the extension.
 - Subagents inherit the caller's current model and thinking level unless a custom profile overrides `model` or `thinking`.
 - Subagents do not inherit parent conversation messages or tool results, so prompts should be self-contained.
-- `explorer` is prompted as read-only; pi permissions are still controlled by the active pi runtime.
+- `explorer` is prompted as read-only; its child session allows `bash` for read-only exploration and verification commands such as `rg` or test scripts, while pi permissions are still controlled by the active pi runtime.
 
 ## E2E
 
