@@ -60,7 +60,7 @@ interface CreateAgentToolOptions {
 
 type AgentToolResult = ReturnType<typeof textResult>;
 
-const MAX_ACTIVITY_LINES = 3;
+const MAX_ACTIVITY_LINES = 2;
 const ACTIVITY_DISPLAY_PREVIEW_CHARS = 120;
 const PROGRESS_UPDATE_INTERVAL_MS = 250;
 const PROGRESS_HEARTBEAT_INTERVAL_MS = 1000;
