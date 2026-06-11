@@ -69,7 +69,8 @@ The explorer returns a concise repo map, and the main agent relays the useful pa
 ## Notes
 
 - Subagents cannot launch other subagents; the main agent coordinates follow-up delegation after each result returns.
-- Root-level parallel delegation is supported and bounded by the extension.
+- Root-level parallel delegation is supported and bounded by the extension. The default maximum is 12 concurrent subagents; package users can override it with `createSubagentExtension({ maxWidth })`.
+- Subagent progress/result lines include stepwise token usage when available, for example `↑81k ↓4.9k R602k CH94.7% $0.980`.
 - Subagents inherit the caller's current model and thinking level.
 - Subagents do not inherit parent conversation messages or tool results, so prompts should be self-contained.
 - `explorer` is prompted as read-only; pi permissions are still controlled by the active pi runtime.

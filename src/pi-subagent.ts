@@ -28,7 +28,7 @@ import type {
   SubagentUsage,
 } from "./types.ts";
 
-const DEFAULT_MAX_WIDTH = 4;
+const DEFAULT_MAX_WIDTH = 12;
 const ALLOWED_SUBAGENTS: SubagentType[] = ["general-purpose", "explorer"];
 
 const agentToolParameters = Type.Object({
