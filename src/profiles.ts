@@ -44,19 +44,12 @@ function parseModel(value: unknown): string | undefined | "invalid" {
 }
 
 function parseToolList(value: unknown): string[] | "invalid" {
-  if (value === undefined || value === null) {
-    return [];
-  }
-  const rawValues = typeof value === "string" ? value.split(",") : Array.isArray(value) ? value : "invalid";
-  if (rawValues === "invalid") {
+  if (typeof value !== "string") {
     return "invalid";
   }
   const tools: string[] = [];
   const seen = new Set<string>();
-  for (const rawValue of rawValues) {
-    if (typeof rawValue !== "string") {
-      return "invalid";
-    }
+  for (const rawValue of value.split(",")) {
     const tool = rawValue.trim();
     if (!tool || seen.has(tool)) {
       continue;
@@ -64,7 +57,7 @@ function parseToolList(value: unknown): string[] | "invalid" {
     seen.add(tool);
     tools.push(tool);
   }
-  return tools;
+  return tools.length > 0 ? tools : "invalid";
 }
 
 function parseProfileFile(filePath: string, name: string, options: { requireBody: boolean }): SubagentProfile | undefined {

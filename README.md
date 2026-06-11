@@ -78,12 +78,12 @@ You are a careful code reviewer. Focus on correctness, tests, regressions, and m
 Fields:
 
 - `description` is required and is shown in the available-agent roster.
-- `tools` is optional; when present, it becomes the child-session tool allowlist for the subagent. Omit it to keep the default child-session tools. Tool names can target built-ins (`read`, `bash`, `edit`, `write`, `grep`, `find`, `ls`) and any custom or extension tools loaded into that child session; `Agent` is always stripped from child sessions.
+- `tools` is optional; omit it to keep the default child-session tools. When present, it must be a non-empty comma-separated string such as `tools: read, grep, find`; that list becomes the child-session tool allowlist. Tool names can target built-ins (`read`, `bash`, `edit`, `write`, `grep`, `find`, `ls`) and any custom or extension tools loaded into that child session. Unknown tool names are passed to pi, which may ignore them; `Agent` is always stripped from child sessions.
 - `model` is optional; omit it or set `inherit` to use the caller's model; explicit values must use exact `provider/model-id` syntax.
 - `thinking` is optional; omit it or set `inherit` to use the caller's thinking level.
 - The markdown body is required and is appended to the child agent's system prompt.
 
-Files are ignored when the filename is not a valid lowercase kebab-case agent name, the frontmatter is invalid, `description` is missing, the body is empty, `model` is malformed, `tools` is malformed, or `thinking` is not one of `off`, `minimal`, `low`, `medium`, `high`, or `xhigh`. Profiles with syntactically valid but unavailable `model` values are not advertised in the active agent roster.
+Files are ignored when the filename is not a valid lowercase kebab-case agent name, the frontmatter is invalid, `description` is missing, the body is empty, `model` is malformed, `tools` is missing a non-empty comma-separated value after the field is present, or `thinking` is not one of `off`, `minimal`, `low`, `medium`, `high`, or `xhigh`. Profiles with syntactically valid but unavailable `model` values are not advertised in the active agent roster.
 
 ## Notes
 

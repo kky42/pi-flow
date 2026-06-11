@@ -340,6 +340,42 @@ model: not-a-provider-model
 ---
 
 Ignored.`);
+    writeFileSync(join(subagentsDir, "unknown-tools.md"), `---
+description: Keeps unknown tool names for pi to handle.
+tools: read, greb
+---
+
+Unknown tools are passed through.`);
+    writeFileSync(join(subagentsDir, "blank-tools.md"), `---
+description: Blank tools is invalid.
+tools:
+---
+
+Ignored.`);
+    writeFileSync(join(subagentsDir, "null-tools.md"), `---
+description: Null tools is invalid.
+tools: null
+---
+
+Ignored.`);
+    writeFileSync(join(subagentsDir, "empty-string-tools.md"), `---
+description: Empty string tools is invalid.
+tools: ""
+---
+
+Ignored.`);
+    writeFileSync(join(subagentsDir, "list-tools.md"), `---
+description: YAML list tools are invalid.
+tools: [read, bash]
+---
+
+Ignored.`);
+    writeFileSync(join(subagentsDir, "empty-list-tools.md"), `---
+description: Empty list tools are invalid.
+tools: []
+---
+
+Ignored.`);
 
     const profiles = getSubagentProfiles(agentDir);
 
@@ -350,10 +386,20 @@ Ignored.`);
       thinking: "low",
       systemPrompt: "You are a careful code reviewer.",
     });
+    expect(profiles.get("unknown-tools")).toMatchObject({
+      name: "unknown-tools",
+      tools: ["read", "greb"],
+      systemPrompt: "Unknown tools are passed through.",
+    });
     expect(profiles.has("Bad Name")).toBe(false);
     expect(profiles.has("missing-description")).toBe(false);
     expect(profiles.has("bad-thinking")).toBe(false);
     expect(profiles.has("bad-model")).toBe(false);
+    expect(profiles.has("blank-tools")).toBe(false);
+    expect(profiles.has("null-tools")).toBe(false);
+    expect(profiles.has("empty-string-tools")).toBe(false);
+    expect(profiles.has("list-tools")).toBe(false);
+    expect(profiles.has("empty-list-tools")).toBe(false);
     expect(profiles.has("general-purpose")).toBe(true);
     expect(profiles.has("explorer")).toBe(true);
   });

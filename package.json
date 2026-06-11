@@ -1,6 +1,6 @@
 {
   "name": "@kky42/pi-subagents",
-  "version": "1.0.5",
+  "version": "1.0.6",
   "description": "Claude Code-style subagents for pi.",
   "type": "module",
   "main": "./index.ts",
