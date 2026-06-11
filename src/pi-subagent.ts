@@ -315,6 +315,16 @@ function formatActivityLineForDisplay(line: string): string {
   return `${line.slice(0, ACTIVITY_DISPLAY_PREVIEW_CHARS).trimEnd()} ... (+${hiddenChars} chars)`;
 }
 
+function formatStatusReason(error: string | undefined): string {
+  if (!error) {
+    return "";
+  }
+  if (error === "Maximum subagent width reached") {
+    return ": max width reached";
+  }
+  return `: ${error}`;
+}
+
 function renderProgressNode(node: SubagentProgressNode, theme: Theme): Container {
   const container = new Container();
   const status = node.status === "completed" ? "done" : node.status;
@@ -603,16 +613,20 @@ function createAgentTool(
       }
 
       state.childCount++;
-      return runSubagent(
-        toolCallId,
-        params,
-        subagentType,
-        effectiveState,
-        options,
-        signal,
-        ctx,
-        effectiveState.progressEnabled ? onUpdate : undefined,
-      );
+      try {
+        return await runSubagent(
+          toolCallId,
+          params,
+          subagentType,
+          effectiveState,
+          options,
+          signal,
+          ctx,
+          effectiveState.progressEnabled ? onUpdate : undefined,
+        );
+      } finally {
+        state.childCount = Math.max(0, state.childCount - 1);
+      }
     },
     renderCall(args, theme, context) {
       if (context.executionStarted) {
@@ -632,8 +646,9 @@ function createAgentTool(
         return renderProgressNode(details.progress, theme);
       }
       const usage = details.usage ? ` ${formatUsage(details.usage)}` : "";
+      const reason = details.status === "rejected" || details.status === "error" ? formatStatusReason(details.error) : "";
       return new Text(
-        `${theme.bold("Agent")} ${theme.fg("muted", details.subagentType)} ${theme.fg("dim", details.description)} ${theme.fg("dim", `${details.status}${usage}`)}`,
+        `${theme.bold("Agent")} ${theme.fg("muted", details.subagentType)} ${theme.fg("dim", details.description)} ${theme.fg("dim", `${details.status}${reason}${usage}`)}`,
         0,
         0,
       );

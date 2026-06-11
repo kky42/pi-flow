@@ -530,6 +530,43 @@ describe("pi-subagent", () => {
     disposeSession(session);
   });
 
+  it("releases completed subagents before later tool rounds in the same user prompt", async () => {
+    const { session, registration } = await createSession({ maxWidth: 4 });
+
+    registration.setResponses([
+      fauxAssistantMessage(
+        [1, 2, 3, 4].map((index) =>
+          fauxToolCall("Agent", { description: `Round 1 search ${index}`, prompt: `First round task ${index}.` }),
+        ),
+        { stopReason: "toolUse" },
+      ),
+      fauxAssistantMessage("round 1 child 1 done"),
+      fauxAssistantMessage("round 1 child 2 done"),
+      fauxAssistantMessage("round 1 child 3 done"),
+      fauxAssistantMessage("round 1 child 4 done"),
+      fauxAssistantMessage(
+        [1, 2, 3, 4].map((index) =>
+          fauxToolCall("Agent", { description: `Round 2 search ${index}`, prompt: `Second round task ${index}.` }),
+        ),
+        { stopReason: "toolUse" },
+      ),
+      fauxAssistantMessage("round 2 child 1 done"),
+      fauxAssistantMessage("round 2 child 2 done"),
+      fauxAssistantMessage("round 2 child 3 done"),
+      fauxAssistantMessage("round 2 child 4 done"),
+      fauxAssistantMessage("root done"),
+    ]);
+
+    await session.prompt("Run four searches, then after they finish run four more.");
+
+    const serialized = JSON.stringify(session.messages);
+    expect(serialized).toContain("round 1 child 4 done");
+    expect(serialized).toContain("round 2 child 4 done");
+    expect(serialized).not.toContain("Maximum subagent width reached");
+
+    disposeSession(session);
+  });
+
   it("renders renderCall and renderResult with subagent type, description, and status", async () => {
     let captured: any;
     const mockApi: any = {
@@ -584,10 +621,21 @@ describe("pi-subagent", () => {
     expect(completedText).toContain("completed");
 
     const errorText = renderToText(captured.renderResult(buildResult("error"), {}, theme, {}));
-    expect(errorText).toContain("error");
+    expect(errorText).toContain("error: fail");
 
     const rejectedText = renderToText(captured.renderResult(buildResult("rejected"), {}, theme, {}));
-    expect(rejectedText).toContain("rejected");
+    expect(rejectedText).toContain("rejected: fail");
+
+    const maxWidthRejectedText = renderToText(captured.renderResult({
+      content: [{ type: "text" as const, text: "x" }],
+      details: {
+        description: "Optimize task253",
+        subagentType: "general-purpose" as const,
+        status: "rejected" as const,
+        error: "Maximum subagent width reached",
+      },
+    }, {}, theme, {}));
+    expect(maxWidthRejectedText).toContain("rejected: max width reached");
 
     const unknownCallText = renderToText(
       captured.renderCall(
