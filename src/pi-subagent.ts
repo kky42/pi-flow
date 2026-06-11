@@ -20,7 +20,13 @@ import {
   buildCoordinatorPrompt,
   getPresetAppendPrompt,
 } from "./prompts.ts";
-import type { SubagentExtensionOptions, SubagentProgressNode, SubagentToolDetails, SubagentType } from "./types.ts";
+import type {
+  SubagentExtensionOptions,
+  SubagentProgressNode,
+  SubagentToolDetails,
+  SubagentType,
+  SubagentUsage,
+} from "./types.ts";
 
 const DEFAULT_MAX_WIDTH = 4;
 const ALLOWED_SUBAGENTS: SubagentType[] = ["general-purpose", "explorer"];
@@ -268,6 +274,39 @@ function formatDuration(ms: number): string {
   return `${seconds}s`;
 }
 
+function formatTokens(count: number): string {
+  if (count < 1000) {
+    return count.toString();
+  }
+  if (count < 10000) {
+    return `${(count / 1000).toFixed(1)}k`;
+  }
+  if (count < 1000000) {
+    return `${Math.round(count / 1000)}k`;
+  }
+  if (count < 10000000) {
+    return `${(count / 1000000).toFixed(1)}M`;
+  }
+  return `${Math.round(count / 1000000)}M`;
+}
+
+function formatUsage(usage: SubagentUsage): string {
+  const parts = [`↑${formatTokens(usage.input)}`, `↓${formatTokens(usage.output)}`];
+  if (usage.cacheRead) {
+    parts.push(`R${formatTokens(usage.cacheRead)}`);
+  }
+  if (usage.cacheWrite) {
+    parts.push(`W${formatTokens(usage.cacheWrite)}`);
+  }
+  if ((usage.cacheRead > 0 || usage.cacheWrite > 0) && usage.latestCacheHitRate !== undefined) {
+    parts.push(`CH${usage.latestCacheHitRate.toFixed(1)}%`);
+  }
+  if (usage.cost) {
+    parts.push(`$${usage.cost.toFixed(3)}`);
+  }
+  return parts.join(" ");
+}
+
 function formatActivityLineForDisplay(line: string): string {
   if (line.length <= ACTIVITY_DISPLAY_PREVIEW_CHARS) {
     return line;
@@ -280,9 +319,10 @@ function renderProgressNode(node: SubagentProgressNode, theme: Theme): Container
   const container = new Container();
   const status = node.status === "completed" ? "done" : node.status;
   const elapsed = formatDuration((node.endedAt ?? Date.now()) - node.startedAt);
+  const usage = node.usage ? ` ${formatUsage(node.usage)}` : "";
   container.addChild(
     new Text(
-      `${theme.bold(formatProgressTitle(node))} ${theme.fg("dim", `${status} ${elapsed}`)}`,
+      `${theme.bold(formatProgressTitle(node))} ${theme.fg("dim", `${status} ${elapsed}${usage}`)}`,
       0,
       0,
     ),
@@ -320,6 +360,42 @@ function extractFinalAssistantText(messages: readonly unknown[]): string {
     }
   }
   return "";
+}
+
+function extractLatestCacheHitRate(messages: readonly unknown[]): number | undefined {
+  for (let i = messages.length - 1; i >= 0; i--) {
+    const message = messages[i] as {
+      role?: string;
+      usage?: { input?: number; cacheRead?: number; cacheWrite?: number };
+    };
+    if (message.role !== "assistant" || !message.usage) {
+      continue;
+    }
+    const input = message.usage.input ?? 0;
+    const cacheRead = message.usage.cacheRead ?? 0;
+    const cacheWrite = message.usage.cacheWrite ?? 0;
+    const promptTokens = input + cacheRead + cacheWrite;
+    return promptTokens > 0 ? (cacheRead / promptTokens) * 100 : undefined;
+  }
+  return undefined;
+}
+
+function getSubagentUsage(session: {
+  getSessionStats: () => {
+    tokens: { input: number; output: number; cacheRead: number; cacheWrite: number };
+    cost: number;
+  };
+  messages: readonly unknown[];
+}): SubagentUsage {
+  const stats = session.getSessionStats();
+  return {
+    input: stats.tokens.input,
+    output: stats.tokens.output,
+    cacheRead: stats.tokens.cacheRead,
+    cacheWrite: stats.tokens.cacheWrite,
+    cost: stats.cost,
+    latestCacheHitRate: extractLatestCacheHitRate(session.messages),
+  };
 }
 
 async function runSubagent(
@@ -422,6 +498,9 @@ async function runSubagent(
   const unsubscribe = progress
     ? session.subscribe((event) => {
         updateProgressFromEvent(progress, event);
+        if (event.type === "message_end" && event.message.role === "assistant") {
+          progress.usage = getSubagentUsage(session);
+        }
         emitProgressSoon();
       })
     : undefined;
@@ -437,9 +516,11 @@ async function runSubagent(
     emitProgress();
     await session.prompt(params.prompt, { source: "extension" });
     const result = extractFinalAssistantText(session.messages) || "(no final text output)";
+    const usage = getSubagentUsage(session);
     if (progress) {
       progress.status = "completed";
       progress.result = result;
+      progress.usage = usage;
       progress.endedAt = Date.now();
     }
     return textResult(`Subagent "${params.description}" (${subagentType}) completed:\n\n${result}`, {
@@ -447,13 +528,16 @@ async function runSubagent(
       subagentType,
       status: "completed",
       result,
+      usage,
       ...(progress ? { progress } : {}),
     });
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
+    const usage = getSubagentUsage(session);
     if (progress) {
       progress.status = "error";
       progress.error = message;
+      progress.usage = usage;
       progress.endedAt = Date.now();
     }
     return textResult(`Subagent "${params.description}" (${subagentType}) failed: ${message}`, {
@@ -461,6 +545,7 @@ async function runSubagent(
       subagentType,
       status: "error",
       error: message,
+      usage,
       ...(progress ? { progress } : {}),
     });
   } finally {
@@ -546,8 +631,9 @@ function createAgentTool(
       if (details.progress) {
         return renderProgressNode(details.progress, theme);
       }
+      const usage = details.usage ? ` ${formatUsage(details.usage)}` : "";
       return new Text(
-        `${theme.bold("Agent")} ${theme.fg("muted", details.subagentType)} ${theme.fg("dim", details.description)} ${theme.fg("dim", details.status)}`,
+        `${theme.bold("Agent")} ${theme.fg("muted", details.subagentType)} ${theme.fg("dim", details.description)} ${theme.fg("dim", `${details.status}${usage}`)}`,
         0,
         0,
       );

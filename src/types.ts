@@ -4,6 +4,15 @@ export interface SubagentExtensionOptions {
   maxWidth?: number;
 }
 
+export interface SubagentUsage {
+  input: number;
+  output: number;
+  cacheRead: number;
+  cacheWrite: number;
+  cost: number;
+  latestCacheHitRate?: number;
+}
+
 export interface SubagentProgressNode {
   id: string;
   description: string;
@@ -15,6 +24,7 @@ export interface SubagentProgressNode {
   activityCount: number;
   result?: string;
   error?: string;
+  usage?: SubagentUsage;
 }
 
 export interface SubagentToolDetails {
@@ -23,5 +33,6 @@ export interface SubagentToolDetails {
   status: "running" | "completed" | "rejected" | "error";
   result?: string;
   error?: string;
+  usage?: SubagentUsage;
   progress?: SubagentProgressNode;
 }

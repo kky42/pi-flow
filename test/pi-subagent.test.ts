@@ -385,6 +385,9 @@ describe("pi-subagent", () => {
 
     expect(result.details.progress?.id).toBe("root-progress-a");
     expect(result.details.progress?.description).toBe("Same audit");
+    expect(result.details.usage?.input).toBeGreaterThan(0);
+    expect(result.details.usage?.output).toBeGreaterThan(0);
+    expect(result.details.progress?.usage).toEqual(result.details.usage);
 
     disposeSession(session);
   });
@@ -634,6 +637,14 @@ describe("pi-subagent", () => {
             startedAt: now - 2000,
             activity: ["Read src/types.ts", "Read app.py", "Read config.yaml"],
             activityCount: 5,
+            usage: {
+              input: 81_000,
+              output: 4_900,
+              cacheRead: 602_000,
+              cacheWrite: 0,
+              latestCacheHitRate: 94.666,
+              cost: 0.85,
+            },
           },
         },
       };
@@ -641,7 +652,7 @@ describe("pi-subagent", () => {
       const text = renderToText(captured.renderResult(result, {}, theme, {}));
 
       expect(text).toContain("Agent(explorer: Research repo)");
-      expect(text).toContain("running 2s");
+      expect(text).toContain("running 2s ↑81k ↓4.9k R602k CH94.7% $0.850");
       expect(text).toContain("... +2 earlier events");
       expect(text).toContain("Read src/types.ts");
       expect(text).toContain("Read app.py");
