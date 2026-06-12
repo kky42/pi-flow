@@ -54,8 +54,14 @@ interface DelegationState {
   progressEnabled: boolean;
 }
 
+interface SubagentUsageStatusState {
+  calls: Map<string, SubagentUsage>;
+  latestCacheHitRate?: number;
+}
+
 interface CreateAgentToolOptions {
   getThinkingLevel: () => ReturnType<ExtensionAPI["getThinkingLevel"]>;
+  updateStatus: (ctx: ExtensionContext, toolCallId: string, usage: SubagentUsage) => void;
 }
 
 type AgentToolResult = ReturnType<typeof textResult>;
@@ -340,6 +346,57 @@ function formatUsage(usage: SubagentUsage): string {
   return parts.join(" ");
 }
 
+function createUsageStatusState(): SubagentUsageStatusState {
+  return {
+    calls: new Map(),
+  };
+}
+
+function getUsageTotals(state: SubagentUsageStatusState): SubagentUsage {
+  const totals: SubagentUsage = {
+    input: 0,
+    output: 0,
+    cacheRead: 0,
+    cacheWrite: 0,
+    cost: 0,
+    latestCacheHitRate: state.latestCacheHitRate,
+  };
+  for (const usage of state.calls.values()) {
+    totals.input += usage.input;
+    totals.output += usage.output;
+    totals.cacheRead += usage.cacheRead;
+    totals.cacheWrite += usage.cacheWrite;
+    totals.cost += usage.cost;
+  }
+  return totals;
+}
+
+function formatUsageStatus(totals: SubagentUsage, theme: Theme): string {
+  return `${theme.fg("dim", "pi-subagents ")}${theme.fg("dim", formatUsage(totals))}`;
+}
+
+function publishUsageStatus(ctx: ExtensionContext, state: SubagentUsageStatusState): void {
+  const totals = getUsageTotals(state);
+  if (totals.input === 0 && totals.output === 0 && totals.cacheRead === 0 && totals.cacheWrite === 0 && totals.cost === 0) {
+    ctx.ui.setStatus("pi-subagents", undefined);
+    return;
+  }
+  ctx.ui.setStatus("pi-subagents", formatUsageStatus(totals, ctx.ui.theme));
+}
+
+function updateUsageStatus(
+  state: SubagentUsageStatusState,
+  ctx: ExtensionContext,
+  toolCallId: string,
+  usage: SubagentUsage,
+): void {
+  state.calls.set(toolCallId, usage);
+  if (usage.latestCacheHitRate !== undefined) {
+    state.latestCacheHitRate = usage.latestCacheHitRate;
+  }
+  publishUsageStatus(ctx, state);
+}
+
 function formatActivityLineForDisplay(line: string): string {
   if (line.length <= ACTIVITY_DISPLAY_PREVIEW_CHARS) {
     return line;
@@ -548,15 +605,19 @@ async function runSubagent(
     progressHeartbeatTimer = undefined;
   };
 
-  const unsubscribe = progress
-    ? session.subscribe((event) => {
-        updateProgressFromEvent(progress, event);
-        if (event.type === "message_end" && event.message.role === "assistant") {
-          progress.usage = getSubagentUsage(session);
-        }
-        emitProgressSoon();
-      })
-    : undefined;
+  const unsubscribe = session.subscribe((event) => {
+    if (progress) {
+      updateProgressFromEvent(progress, event);
+      emitProgressSoon();
+    }
+    if (event.type === "message_end" && event.message.role === "assistant") {
+      const usage = getSubagentUsage(session);
+      if (progress) {
+        progress.usage = usage;
+      }
+      options.updateStatus(ctx, toolCallId, usage);
+    }
+  });
 
   try {
     if (signal?.aborted) {
@@ -571,6 +632,7 @@ async function runSubagent(
     await session.prompt(params.prompt, { source: "extension" });
     const result = extractFinalAssistantText(session.messages) || "(no final text output)";
     const usage = getSubagentUsage(session);
+    options.updateStatus(ctx, toolCallId, usage);
     if (progress) {
       progress.status = "completed";
       progress.result = result;
@@ -588,6 +650,7 @@ async function runSubagent(
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     const usage = getSubagentUsage(session);
+    options.updateStatus(ctx, toolCallId, usage);
     if (progress) {
       progress.status = "error";
       progress.error = message;
@@ -724,11 +787,26 @@ export function createSubagentExtension(options: SubagentExtensionOptions = {}):
       childCount: 0,
       progressEnabled: false,
     };
+    const usageStatusState = createUsageStatusState();
     const toolOptions: CreateAgentToolOptions = {
       getThinkingLevel: () => pi.getThinkingLevel(),
+      updateStatus: (ctx, toolCallId, usage) => {
+        if (!ctx.hasUI) {
+          return;
+        }
+        updateUsageStatus(usageStatusState, ctx, toolCallId, usage);
+      },
     };
 
     pi.registerTool(createAgentTool(rootState, toolOptions));
+
+    pi.on("session_start", (_event, ctx) => {
+      usageStatusState.calls.clear();
+      usageStatusState.latestCacheHitRate = undefined;
+      if (ctx.hasUI) {
+        ctx.ui.setStatus("pi-subagents", undefined);
+      }
+    });
 
     pi.on("before_agent_start", (event) => {
       if (!pi.getAllTools().some((tool) => tool.name === "Agent")) {

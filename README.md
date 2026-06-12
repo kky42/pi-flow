@@ -91,6 +91,7 @@ Files are ignored when the filename is not a valid lowercase kebab-case agent na
 - Root-level parallel delegation is supported and bounded by the extension.
 - Subagents inherit the caller's current model and thinking level unless a custom profile overrides `model` or `thinking`.
 - Subagents do not inherit parent conversation messages or tool results, so prompts should be self-contained.
+- The TUI footer shows cumulative child-agent usage under the `pi-subagents` status key, for example `pi-subagents ↑47k ↓3.5k R177k CH91.0% $0.429`.
 - `explorer` is prompted as read-only; its child session allows `bash` for read-only exploration and verification commands such as `rg` or test scripts, while pi permissions are still controlled by the active pi runtime.
 
 ## E2E

@@ -131,17 +131,36 @@ describe("pi-subagent", () => {
     return stripAnsi(component.render(200).join("\n"));
   }
 
+  function formatTestTokens(count: number) {
+    if (count < 1000) {
+      return count.toString();
+    }
+    if (count < 10000) {
+      return `${(count / 1000).toFixed(1)}k`;
+    }
+    if (count < 1000000) {
+      return `${Math.round(count / 1000)}k`;
+    }
+    if (count < 10000000) {
+      return `${(count / 1000000).toFixed(1)}M`;
+    }
+    return `${Math.round(count / 1000000)}M`;
+  }
+
   function makeExecutionContext({
     hasUI,
     model,
     modelRegistry,
     tui = false,
+    onStatus,
   }: {
     hasUI: boolean;
     model: Model<string>;
     modelRegistry: ModelRegistry;
     tui?: boolean;
+    onStatus?: (key: string, text: string | undefined) => void;
   }) {
+    const theme = makeMockTheme();
     return {
       hasUI,
       cwd,
@@ -149,6 +168,8 @@ describe("pi-subagent", () => {
       modelRegistry,
       ui: {
         getAllThemes: () => (tui ? [{ name: "test", path: "test-theme.json" }] : []),
+        setStatus: (key: string, text: string | undefined) => onStatus?.(key, text),
+        theme,
       },
     };
   }
@@ -628,6 +649,69 @@ This should not be advertised or launched.`);
     expect(result.details.usage?.input).toBeGreaterThan(0);
     expect(result.details.usage?.output).toBeGreaterThan(0);
     expect(result.details.progress?.usage).toEqual(result.details.usage);
+
+    disposeSession(session);
+  });
+
+  it("updates a cumulative pi-subagents status line from child usage", async () => {
+    const { session, registration, model, modelRegistry } = await createSession();
+    const tool = session.getToolDefinition("Agent") as any;
+    const statuses: Array<{ key: string; text: string | undefined }> = [];
+    const context = makeExecutionContext({
+      hasUI: true,
+      model,
+      modelRegistry,
+      onStatus: (key, text) => statuses.push({ key, text }),
+    });
+
+    registration.setResponses([
+      fauxAssistantMessage("first child done"),
+      fauxAssistantMessage("second child done"),
+    ]);
+
+    const first = await tool.execute(
+      "usage-status-a",
+      {
+        description: "First child",
+        prompt: "First child task.",
+      },
+      undefined,
+      undefined,
+      context,
+    );
+    const second = await tool.execute(
+      "usage-status-b",
+      {
+        description: "Second child",
+        prompt: "Second child task.",
+      },
+      undefined,
+      undefined,
+      context,
+    );
+
+    const final = statuses.filter((status) => status.key === "pi-subagents").at(-1)?.text ?? "";
+    const usage = {
+      input: first.details.usage.input + second.details.usage.input,
+      output: first.details.usage.output + second.details.usage.output,
+      cacheRead: first.details.usage.cacheRead + second.details.usage.cacheRead,
+      cacheWrite: first.details.usage.cacheWrite + second.details.usage.cacheWrite,
+      cost: first.details.usage.cost + second.details.usage.cost,
+      latestCacheHitRate: second.details.usage.latestCacheHitRate,
+    };
+    const expected = `pi-subagents ↑${formatTestTokens(usage.input)} ↓${formatTestTokens(usage.output)}`;
+
+    expect(statuses.some((status) => status.key === "pi-subagents" && status.text)).toBe(true);
+    expect(final).toContain(expected);
+    if (usage.cacheRead) {
+      expect(final).toContain(`R${formatTestTokens(usage.cacheRead)}`);
+    }
+    if (usage.cacheWrite) {
+      expect(final).toContain(`W${formatTestTokens(usage.cacheWrite)}`);
+    }
+    if (usage.latestCacheHitRate !== undefined) {
+      expect(final).toContain(`CH${usage.latestCacheHitRate.toFixed(1)}%`);
+    }
 
     disposeSession(session);
   });
