@@ -31,7 +31,7 @@ export const WORKFLOW_PLAIN_TEXT_OUTPUT_NOTE = [
 /**
  * A terminating output tool: pi validates the model's call against `schema`, and
  * the validated arguments become the subagent's structured result (captured into
- * `capture`). pinned pi (0.77.0) has no `terminate` flag, so the prompt contract
+ * `capture`). pinned pi (0.79.4) has no `terminate` flag, so the prompt contract
  * (STRUCTURED_OUTPUT_CONTRACT) is what stops the subagent after a single call.
  */
 export function createStructuredOutputTool(
