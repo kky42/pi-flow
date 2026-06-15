@@ -1,4 +1,4 @@
-import { defineTool, type ExtensionFactory, type ToolDefinition } from "@earendil-works/pi-coding-agent";
+import { defineTool, type ToolDefinition } from "@earendil-works/pi-coding-agent";
 import type { TSchema } from "typebox";
 
 export interface StructuredOutputCapture<T = unknown> {
@@ -57,11 +57,4 @@ export function createStructuredOutputTool(
       };
     },
   });
-}
-
-/** Wrap a tool definition as an extension factory so it can be injected into a child session. */
-export function toolExtensionFactory(tool: ToolDefinition<TSchema, unknown>): ExtensionFactory {
-  return (pi) => {
-    pi.registerTool(tool);
-  };
 }

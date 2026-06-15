@@ -5,7 +5,7 @@ import {
   SessionManager,
   SettingsManager,
   type ExtensionContext,
-  type ExtensionFactory,
+  type ToolDefinition,
 } from "@earendil-works/pi-coding-agent";
 import {
   createProgressNode,
@@ -40,10 +40,8 @@ export interface SpawnSubagentParams {
   excludeTools?: readonly string[];
   /** Text appended after the task prompt (e.g. a structured-output contract). */
   appendInstructions?: string;
-  /** Extra extension factories to register in the child session (e.g. a structured_output tool). */
-  extraExtensionFactories?: ExtensionFactory[];
-  /** Names of injected tools to keep enabled when a profile pins a tool allow-list. */
-  extraToolNames?: readonly string[];
+  /** Extra tools to register in the child session (e.g. a structured_output tool). */
+  customTools?: ToolDefinition[];
 }
 
 export async function spawnSubagent(params: SpawnSubagentParams): Promise<AgentToolResult> {
@@ -62,10 +60,10 @@ export async function spawnSubagent(params: SpawnSubagentParams): Promise<AgentT
   } = params;
   const subagentType = profile.name;
   const excludeTools = params.excludeTools ?? ["Agent"];
-  const extraExtensionFactories = params.extraExtensionFactories ?? [];
-  const extraToolNames = params.extraToolNames ?? [];
+  const customTools = params.customTools ?? [];
   // A pinned tool allow-list must still admit any injected tools (e.g. structured_output).
-  const toolAllowList = profile.tools !== undefined ? [...profile.tools, ...extraToolNames] : undefined;
+  const toolAllowList =
+    profile.tools !== undefined ? [...profile.tools, ...customTools.map((tool) => tool.name)] : undefined;
   const taskPrompt = params.appendInstructions ? `${prompt}\n\n${params.appendInstructions}` : prompt;
   const progress = progressEnabled ? createProgressNode(toolCallId, description, subagentType) : undefined;
 
@@ -79,7 +77,6 @@ export async function spawnSubagent(params: SpawnSubagentParams): Promise<AgentT
     cwd,
     agentDir,
     settingsManager,
-    ...(extraExtensionFactories.length > 0 ? { extensionFactories: extraExtensionFactories } : {}),
     extensionsOverride: (base) => ({
       ...base,
       extensions: base.extensions.filter(
@@ -100,6 +97,7 @@ export async function spawnSubagent(params: SpawnSubagentParams): Promise<AgentT
     sessionManager: SessionManager.inMemory(cwd),
     resourceLoader,
     excludeTools: [...excludeTools],
+    ...(customTools.length > 0 ? { customTools } : {}),
     ...(toolAllowList !== undefined ? { tools: toolAllowList } : {}),
   });
 

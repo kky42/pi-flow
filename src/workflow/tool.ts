@@ -3,7 +3,6 @@ import {
   getAgentDir,
   type ExtensionAPI,
   type ExtensionContext,
-  type ExtensionFactory,
   type Theme,
   type ToolDefinition,
 } from "@earendil-works/pi-coding-agent";
@@ -19,7 +18,6 @@ import { parseWorkflowScript, runWorkflow, type WorkflowAgentRunner } from "./ru
 import {
   createStructuredOutputTool,
   STRUCTURED_OUTPUT_CONTRACT,
-  toolExtensionFactory,
   WORKFLOW_PLAIN_TEXT_OUTPUT_NOTE,
   type StructuredOutputCapture,
 } from "./structured-output.ts";
@@ -113,13 +111,11 @@ export function createWorkflowTool(
         // Structured output: inject a schema-validated structured_output tool and
         // require the subagent to end with it. The captured args become the result.
         let capture: StructuredOutputCapture | undefined;
-        let extraExtensionFactories: ExtensionFactory[] | undefined;
-        let extraToolNames: string[] | undefined;
+        let customTools: ToolDefinition[] | undefined;
         let appendInstructions: string;
         if (call.schema !== undefined && call.schema !== null) {
           capture = { value: undefined, called: false };
-          extraExtensionFactories = [toolExtensionFactory(createStructuredOutputTool(call.schema, capture))];
-          extraToolNames = ["structured_output"];
+          customTools = [createStructuredOutputTool(call.schema, capture)];
           appendInstructions = STRUCTURED_OUTPUT_CONTRACT;
         } else {
           appendInstructions = WORKFLOW_PLAIN_TEXT_OUTPUT_NOTE;
@@ -140,8 +136,7 @@ export function createWorkflowTool(
           onUsage: (usage) => options.updateStatus(ctx, childId, usage),
           excludeTools: ["Agent", "workflow"],
           appendInstructions,
-          extraExtensionFactories,
-          extraToolNames,
+          customTools,
         });
         if (result.details.status !== "completed") {
           throw new Error(result.details.error ?? "subagent failed");
