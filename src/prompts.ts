@@ -27,7 +27,7 @@ export const WORKFLOW_PROMPT_GUIDELINES = [
   "Available globals: agent(prompt, opts), parallel(thunks), pipeline(items, ...stages), phase(title), log(message), args, cwd. Every workflow must call agent() at least once.",
   "Write plain JavaScript only. Do not use TypeScript syntax, import/require, fs, or Date.now()/Math.random()/new Date() (workflows must be deterministic).",
   "parallel() takes functions, not promises: `await parallel(items.map(item => () => agent('...', { label: '...' })))`. Results come back in input order.",
-  "pipeline(items, ...stages) runs each item through the stages in order while different items run concurrently; each stage receives (previousValue, originalItem, index).",
+  "pipeline(items, ...stages) runs each item through the stages in order while different items run concurrently; each stage receives (previousValue, originalItem, index). Prefer pipeline() for multi-stage work — there is no barrier between stages. Reach for parallel() only when you genuinely need all results together, e.g. dedup or a zero-count early exit.",
   "Give each agent() a unique short `label` and pick a `subagent_type` (defaults to general-purpose) so it inherits that profile's real model, thinking level, tools, and system prompt.",
   "Subagents are fresh sessions with no parent context and cannot launch workflows or other subagents; include all needed context and paths in each agent() prompt.",
   "Failed agent()/parallel()/pipeline() branches resolve to null and are logged unless the workflow is aborted; check for nulls before synthesizing.",
@@ -48,7 +48,7 @@ Script contract:
 - First statement: \`export const meta = { name: 'short_snake_case', description: 'non-empty' }\` (a plain literal; \`phases\` optional).
 - Globals: agent(prompt, opts), parallel(thunks), pipeline(items, ...stages), phase(title), log(message), args, cwd. Call agent() at least once.
 - Plain JavaScript only; no imports, no Date.now()/Math.random()/new Date() (scripts must be deterministic).
-- parallel() takes thunks: \`await parallel(items.map(i => () => agent('...', { label: '...' })))\`. pipeline(items, ...stages) pipelines each item through stages while items run concurrently.
+- parallel() takes thunks: \`await parallel(items.map(i => () => agent('...', { label: '...' })))\`. pipeline(items, ...stages) pipelines each item through stages while items run concurrently — prefer it for multi-stage work (no barrier between stages); use parallel() only when you need all results together.
 
 Each agent() spawns a fresh subagent. Set \`subagent_type\` to inherit a profile's model, thinking, tools, and system prompt:
 ${formatAvailableAgents(profiles)}

@@ -20,6 +20,7 @@ import {
   createStructuredOutputTool,
   STRUCTURED_OUTPUT_CONTRACT,
   toolExtensionFactory,
+  WORKFLOW_PLAIN_TEXT_OUTPUT_NOTE,
   type StructuredOutputCapture,
 } from "./structured-output.ts";
 
@@ -114,12 +115,14 @@ export function createWorkflowTool(
         let capture: StructuredOutputCapture | undefined;
         let extraExtensionFactories: ExtensionFactory[] | undefined;
         let extraToolNames: string[] | undefined;
-        let appendInstructions: string | undefined;
+        let appendInstructions: string;
         if (call.schema !== undefined && call.schema !== null) {
           capture = { value: undefined, called: false };
           extraExtensionFactories = [toolExtensionFactory(createStructuredOutputTool(call.schema, capture))];
           extraToolNames = ["structured_output"];
           appendInstructions = STRUCTURED_OUTPUT_CONTRACT;
+        } else {
+          appendInstructions = WORKFLOW_PLAIN_TEXT_OUTPUT_NOTE;
         }
 
         const childId = `${toolCallId}:agent:${++agentSeq}`;

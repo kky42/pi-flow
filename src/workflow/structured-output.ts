@@ -12,6 +12,20 @@ export const STRUCTURED_OUTPUT_CONTRACT = [
   "- The structured_output arguments ARE this subagent's return value.",
   "- Do not write a prose final answer instead of calling structured_output.",
   "- Inspect files or run commands first if needed, then call structured_output exactly once.",
+  "- If schema validation fails, read the error and call structured_output again with a corrected shape.",
+  "- After calling structured_output successfully, end your turn — no acknowledgment needed.",
+].join("\n");
+
+/**
+ * Appended to a schema-less workflow subagent's task so it knows its final text
+ * is the script's verbatim return value, not a message to a person.
+ */
+export const WORKFLOW_PLAIN_TEXT_OUTPUT_NOTE = [
+  "Output contract:",
+  "- Your final text response is returned verbatim to the calling workflow script — it is your return value, not a message to a person.",
+  "- Output the literal result (data, JSON, or text). Do not add confirmations like \"Done\" or conversational framing.",
+  "- If asked for JSON, return only the raw JSON — no code fences, no prose.",
+  "- Be concise; the script parses your output.",
 ].join("\n");
 
 /**
