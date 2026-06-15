@@ -51,3 +51,7 @@ Interactive tmux TUI runs use `deepseek/deepseek-v4-flash` with high thinking an
 - `proactive-migration-v2`: validates proactive second-opinion delegation for a risky migration review.
 
 Do not count `proactive-ship-v3` as proactive-pass evidence: the model handled that tiny ship-readiness fixture directly. This is acceptable as a behavioral limitation, but future prompt/tool tuning should continue improving this case.
+
+### Workflow tool (v2)
+
+A headless `pi -p` run with `deepseek/deepseek-v4-flash` (high thinking) on a tiny fixture validated the end-to-end workflow path: the model reached for the `workflow` tool (root toolCalls `{bash:2, read:5, workflow:1}`, zero `Agent`), wrote a valid deterministic script (`export const meta`, `parallel([() => agent(prompt, { label, subagent_type })])`, synthesized `return`), fanned out three real subagents through the shared spawn core, and the tool returned `status: completed, agentCount: 3` with all agents `done`. Structured output, abort propagation, and limiter queueing are covered by unit/faux-integration tests rather than this run. Manual interactive validation is acceptable for the workflow tool.
