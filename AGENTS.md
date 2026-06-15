@@ -16,9 +16,9 @@
 - Subagents inherit the caller's current model and thinking level.
 - There is no permissions system in v1. Presets are prompt-specialized ordinary pi agents.
 - Subagents cannot launch other subagents. Do not give child sessions the `Agent` tool or the coordinator prompt.
-- Root-level parallel delegation is allowed and bounded by `maxWidth = 4` by default.
-- Do not put exact width values in the model-facing coordinator prompt. The prompt should say root-level parallel delegation is bounded; enforcement and exact rejection messages come from the tool.
-- No user-facing flags in v1. Limit overrides are only through `createSubagentExtension({ maxWidth })`.
+- Parallel delegation is allowed and bounded by a global `maxConcurrency` limit (default `12`), which caps how many subagents run concurrently across the whole agent run. A slot is taken on launch and released on completion/failure/abort.
+- Do not put exact concurrency values in the model-facing coordinator prompt. The prompt should say parallel delegation is bounded; enforcement and exact rejection messages come from the tool.
+- No user-facing flags in v1. Limit overrides are only through `createSubagentExtension({ maxConcurrency })`.
 - User-defined agents are future work. The main-agent prompt may mention that they are not supported yet.
 
 ## References Read

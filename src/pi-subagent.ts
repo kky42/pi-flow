@@ -30,7 +30,7 @@ import type {
   SubagentUsage,
 } from "./types.ts";
 
-const DEFAULT_MAX_WIDTH = 12;
+const DEFAULT_MAX_CONCURRENCY = 12;
 
 const agentToolParameters = Type.Object({
   description: Type.String({
@@ -49,8 +49,8 @@ const agentToolParameters = Type.Object({
 type AgentToolParams = Static<typeof agentToolParameters>;
 
 interface DelegationState {
-  maxWidth: number;
-  childCount: number;
+  maxConcurrency: number;
+  activeCount: number;
   progressEnabled: boolean;
 }
 
@@ -409,8 +409,8 @@ function formatStatusReason(error: string | undefined): string {
   if (!error) {
     return "";
   }
-  if (error === "Maximum subagent width reached") {
-    return ": max width reached";
+  if (error === "Maximum subagent concurrency reached") {
+    return ": max concurrency reached";
   }
   return `: ${error}`;
 }
@@ -721,19 +721,19 @@ function createAgentTool(
         });
       }
 
-      if (state.childCount >= effectiveState.maxWidth) {
+      if (state.activeCount >= effectiveState.maxConcurrency) {
         return textResult(
-          `Maximum subagent width reached for this agent run. maxWidth: ${effectiveState.maxWidth}.`,
+          `Maximum subagent concurrency reached for this agent run. maxConcurrency: ${effectiveState.maxConcurrency}.`,
           {
             description: params.description,
             subagentType,
             status: "rejected",
-            error: "Maximum subagent width reached",
+            error: "Maximum subagent concurrency reached",
           },
         );
       }
 
-      state.childCount++;
+      state.activeCount++;
       try {
         return await runSubagent(
           toolCallId,
@@ -747,7 +747,7 @@ function createAgentTool(
           effectiveState.progressEnabled ? onUpdate : undefined,
         );
       } finally {
-        state.childCount = Math.max(0, state.childCount - 1);
+        state.activeCount = Math.max(0, state.activeCount - 1);
       }
     },
     renderCall(args, theme, context) {
@@ -779,12 +779,12 @@ function createAgentTool(
 }
 
 export function createSubagentExtension(options: SubagentExtensionOptions = {}): ExtensionFactory {
-  const maxWidth = normalizeLimit(options.maxWidth, DEFAULT_MAX_WIDTH, "maxWidth");
+  const maxConcurrency = normalizeLimit(options.maxConcurrency, DEFAULT_MAX_CONCURRENCY, "maxConcurrency");
 
   return function subagentExtension(pi: ExtensionAPI) {
     const rootState: DelegationState = {
-      maxWidth,
-      childCount: 0,
+      maxConcurrency,
+      activeCount: 0,
       progressEnabled: false,
     };
     const usageStatusState = createUsageStatusState();
@@ -812,7 +812,7 @@ export function createSubagentExtension(options: SubagentExtensionOptions = {}):
       if (!pi.getAllTools().some((tool) => tool.name === "Agent")) {
         return;
       }
-      rootState.childCount = 0;
+      rootState.activeCount = 0;
       return {
         systemPrompt: `${event.systemPrompt}\n\n${buildCoordinatorPrompt(filterProfilesForModelRegistry(
           getSubagentProfiles(getAgentDir()),

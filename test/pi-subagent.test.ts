@@ -74,7 +74,7 @@ describe("pi-subagent", () => {
     session.dispose();
   }
 
-  async function createSession(options: { maxWidth?: number } = {}) {
+  async function createSession(options: { maxConcurrency?: number } = {}) {
     const registration = registerFauxProvider({
       models: [{ id: "faux-thinker", name: "Faux Thinker", reasoning: true }],
     });
@@ -498,7 +498,7 @@ Default tools prompt marker.`);
     disposeSession(session);
   });
 
-  it("does not count an unavailable-profile-model rejection toward maxWidth", async () => {
+  it("does not count an unavailable-profile-model rejection toward maxConcurrency", async () => {
     const subagentsDir = join(agentDir, "subagents");
     mkdirSync(subagentsDir, { recursive: true });
     writeFileSync(join(subagentsDir, "bad-model-agent.md"), `---
@@ -508,7 +508,7 @@ model: ghost/nope
 
 This should not be advertised or launched.`);
 
-    const { session, registration } = await createSession({ maxWidth: 1 });
+    const { session, registration } = await createSession({ maxConcurrency: 1 });
     let rootContinuationContext: Context | undefined;
 
     registration.setResponses([
@@ -535,7 +535,7 @@ This should not be advertised or launched.`);
     const serialized = JSON.stringify(rootContinuationContext?.messages);
     expect(serialized).toContain("Unknown subagent_type");
     expect(serialized).toContain("valid child ran");
-    expect(serialized).not.toContain("Maximum subagent width reached");
+    expect(serialized).not.toContain("Maximum subagent concurrency reached");
 
     disposeSession(session);
   });
@@ -740,8 +740,8 @@ This should not be advertised or launched.`);
     disposeSession(session);
   });
 
-  it("enforces maxWidth for foreground parallel Agent calls", async () => {
-    const { session, registration } = await createSession({ maxWidth: 1 });
+  it("enforces maxConcurrency for foreground parallel Agent calls", async () => {
+    const { session, registration } = await createSession({ maxConcurrency: 1 });
     let rootContinuationContext: Context | undefined;
 
     registration.setResponses([
@@ -766,7 +766,7 @@ This should not be advertised or launched.`);
 
     const serialized = JSON.stringify(rootContinuationContext?.messages);
     expect(serialized).toContain("first result");
-    expect(serialized).toContain("Maximum subagent width reached");
+    expect(serialized).toContain("Maximum subagent concurrency reached");
 
     disposeSession(session);
   });
@@ -813,7 +813,7 @@ This should not be advertised or launched.`);
     expect(rootContext?.systemPrompt).toContain("Subagent Delegation");
     expect(rootContext?.systemPrompt).toContain("Subagents cannot launch other subagents");
     expect(rootContext?.systemPrompt).toContain("Root-level parallel delegation is bounded");
-    expect(rootContext?.systemPrompt).not.toContain("max width 4");
+    expect(rootContext?.systemPrompt).not.toContain("max concurrency 4");
     expect(rootContext?.systemPrompt).toContain("Available agents");
     expect(rootContext?.systemPrompt).toContain("general-purpose: General-purpose agent for researching complex questions");
     expect(rootContext?.systemPrompt).toContain("explorer: Fast read-only search agent");
@@ -825,8 +825,8 @@ This should not be advertised or launched.`);
     disposeSession(session);
   });
 
-  it("resets per-turn child count so a new user turn gets a fresh maxWidth budget", async () => {
-    const { session, registration } = await createSession({ maxWidth: 1 });
+  it("resets per-turn active count so a new user turn gets a fresh maxConcurrency budget", async () => {
+    const { session, registration } = await createSession({ maxConcurrency: 1 });
 
     registration.setResponses([
       fauxAssistantMessage(
@@ -849,13 +849,13 @@ This should not be advertised or launched.`);
     const serialized = JSON.stringify(session.messages);
     expect(serialized).toContain("turn 1 child done");
     expect(serialized).toContain("turn 2 child done");
-    expect(serialized).not.toContain("Maximum subagent width reached");
+    expect(serialized).not.toContain("Maximum subagent concurrency reached");
 
     disposeSession(session);
   });
 
   it("releases completed subagents before later tool rounds in the same user prompt", async () => {
-    const { session, registration } = await createSession({ maxWidth: 4 });
+    const { session, registration } = await createSession({ maxConcurrency: 4 });
 
     registration.setResponses([
       fauxAssistantMessage(
@@ -886,7 +886,7 @@ This should not be advertised or launched.`);
     const serialized = JSON.stringify(session.messages);
     expect(serialized).toContain("round 1 child 4 done");
     expect(serialized).toContain("round 2 child 4 done");
-    expect(serialized).not.toContain("Maximum subagent width reached");
+    expect(serialized).not.toContain("Maximum subagent concurrency reached");
 
     disposeSession(session);
   });
@@ -950,16 +950,16 @@ This should not be advertised or launched.`);
     const rejectedText = renderToText(captured.renderResult(buildResult("rejected"), {}, theme, {}));
     expect(rejectedText).toContain("rejected: fail");
 
-    const maxWidthRejectedText = renderToText(captured.renderResult({
+    const maxConcurrencyRejectedText = renderToText(captured.renderResult({
       content: [{ type: "text" as const, text: "x" }],
       details: {
         description: "Optimize task253",
         subagentType: "general-purpose" as const,
         status: "rejected" as const,
-        error: "Maximum subagent width reached",
+        error: "Maximum subagent concurrency reached",
       },
     }, {}, theme, {}));
-    expect(maxWidthRejectedText).toContain("rejected: max width reached");
+    expect(maxConcurrencyRejectedText).toContain("rejected: max concurrency reached");
 
     const unknownCallText = renderToText(
       captured.renderCall(
@@ -1192,7 +1192,7 @@ This should not be advertised or launched.`);
       const finalSerialized = JSON.stringify(session.messages);
       expect(finalSerialized).toContain("repo-a auth uses session cookies");
       expect(finalSerialized).toContain("repo-b auth uses JWT");
-      expect(finalSerialized).not.toContain("Maximum subagent width reached");
+      expect(finalSerialized).not.toContain("Maximum subagent concurrency reached");
 
       disposeSession(session);
     });

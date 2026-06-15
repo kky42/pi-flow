@@ -11,7 +11,13 @@ export interface SubagentProfile {
 }
 
 export interface SubagentExtensionOptions {
-  maxWidth?: number;
+  /**
+   * Maximum number of subagents allowed to run concurrently across the whole
+   * agent run (a global in-flight cap, not a per-level fan-out width). A slot is
+   * taken when a subagent launches and released when it completes, fails, or is
+   * aborted.
+   */
+  maxConcurrency?: number;
 }
 
 export interface SubagentUsage {
