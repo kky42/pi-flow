@@ -14,12 +14,14 @@ import {
   AGENT_PROMPT_GUIDELINES,
   AGENT_PROMPT_SNIPPET,
   buildCoordinatorPrompt,
+  buildWorkflowPrompt,
 } from "./prompts.ts";
 import { getSubagentProfiles } from "./profiles.ts";
 import { ConcurrencyLimiter } from "./core/concurrency.ts";
 import { filterProfilesForModelRegistry, resolveProfileModel } from "./core/model.ts";
 import { spawnSubagent } from "./core/spawn.ts";
 import { textResult } from "./core/progress.ts";
+import { createWorkflowTool } from "./workflow/tool.ts";
 import type {
   SubagentExtensionOptions,
   SubagentProfile,
@@ -349,7 +351,7 @@ function createAgentTool(
           progressEnabled: effectiveState.progressEnabled,
           onProgress: effectiveState.progressEnabled ? onUpdate : undefined,
           onUsage: (usage) => options.updateStatus(ctx, toolCallId, usage),
-          excludeTools: ["Agent"],
+          excludeTools: ["Agent", "workflow"],
         });
       } finally {
         release();
@@ -385,6 +387,7 @@ function createAgentTool(
 
 export function createSubagentExtension(options: SubagentExtensionOptions = {}): ExtensionFactory {
   const maxConcurrency = normalizeLimit(options.maxConcurrency, DEFAULT_MAX_CONCURRENCY, "maxConcurrency");
+  const workflowEnabled = options.workflow !== false;
 
   return function subagentExtension(pi: ExtensionAPI) {
     const rootState: DelegationState = {
@@ -404,6 +407,20 @@ export function createSubagentExtension(options: SubagentExtensionOptions = {}):
     };
 
     pi.registerTool(createAgentTool(rootState, toolOptions));
+    if (workflowEnabled) {
+      pi.registerTool(
+        createWorkflowTool({
+          limiter: rootState.limiter,
+          getThinkingLevel: () => pi.getThinkingLevel(),
+          updateStatus: (ctx, toolCallId, usage) => {
+            if (!ctx.hasUI) {
+              return;
+            }
+            updateUsageStatus(usageStatusState, ctx, toolCallId, usage);
+          },
+        }),
+      );
+    }
 
     pi.on("session_start", (_event, ctx) => {
       usageStatusState.calls.clear();
@@ -414,19 +431,23 @@ export function createSubagentExtension(options: SubagentExtensionOptions = {}):
     });
 
     pi.on("before_agent_start", (event) => {
-      if (!pi.getAllTools().some((tool) => tool.name === "Agent")) {
+      const tools = pi.getAllTools();
+      if (!tools.some((tool) => tool.name === "Agent")) {
         return;
       }
       // No per-turn counter reset: the shared ConcurrencyLimiter takes a slot
       // synchronously in execute() before the first await and releases it in the
       // finally. Acquisition is synchronous and release always runs, so the
       // in-flight count stays accurate across turns without a reset.
-      return {
-        systemPrompt: `${event.systemPrompt}\n\n${buildCoordinatorPrompt(filterProfilesForModelRegistry(
-          getSubagentProfiles(getAgentDir()),
-          (pi as unknown as { modelRegistry?: ModelRegistry }).modelRegistry,
-        ))}`,
-      };
+      const profiles = filterProfilesForModelRegistry(
+        getSubagentProfiles(getAgentDir()),
+        (pi as unknown as { modelRegistry?: ModelRegistry }).modelRegistry,
+      );
+      const sections = [event.systemPrompt, buildCoordinatorPrompt(profiles)];
+      if (workflowEnabled && tools.some((tool) => tool.name === "workflow")) {
+        sections.push(buildWorkflowPrompt(profiles));
+      }
+      return { systemPrompt: sections.join("\n\n") };
     });
   };
 }

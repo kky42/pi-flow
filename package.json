@@ -62,5 +62,8 @@
   "homepage": "https://github.com/kky42/pi-subagents#readme",
   "publishConfig": {
     "access": "public"
+  },
+  "dependencies": {
+    "acorn": "^8.17.0"
   }
 }

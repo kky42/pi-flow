@@ -1163,9 +1163,12 @@ This should not be advertised or launched.`);
     let captured: any;
     const mockApi: any = {
       registerTool: (tool: any) => {
-        captured = tool;
+        if (tool.name === "Agent") {
+          captured = tool;
+        }
       },
       on: () => {},
+      getThinkingLevel: () => "high",
     };
     const factory = createSubagentExtension();
     await factory(mockApi);
@@ -1252,9 +1255,12 @@ This should not be advertised or launched.`);
     let captured: any;
     const mockApi: any = {
       registerTool: (tool: any) => {
-        captured = tool;
+        if (tool.name === "Agent") {
+          captured = tool;
+        }
       },
       on: () => {},
+      getThinkingLevel: () => "high",
     };
     const factory = createSubagentExtension();
     await factory(mockApi);
@@ -1306,9 +1312,12 @@ This should not be advertised or launched.`);
     let captured: any;
     const mockApi: any = {
       registerTool: (tool: any) => {
-        captured = tool;
+        if (tool.name === "Agent") {
+          captured = tool;
+        }
       },
       on: () => {},
+      getThinkingLevel: () => "high",
     };
     const factory = createSubagentExtension();
     await factory(mockApi);

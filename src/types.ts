@@ -15,9 +15,31 @@ export interface SubagentExtensionOptions {
    * Maximum number of subagents allowed to run concurrently across the whole
    * agent run (a global in-flight cap, not a per-level fan-out width). A slot is
    * taken when a subagent launches and released when it completes, fails, or is
-   * aborted.
+   * aborted. The cap is shared by the `Agent` tool and the `workflow` tool.
    */
   maxConcurrency?: number;
+  /**
+   * Register the dynamic `workflow` tool alongside `Agent`. Defaults to true:
+   * one product, two entry points. Set to false for a subagents-only surface.
+   */
+  workflow?: boolean;
+}
+
+export interface WorkflowAgentSnapshot {
+  label: string;
+  phase?: string;
+  status: "running" | "done" | "error";
+}
+
+export interface WorkflowToolDetails {
+  name: string;
+  status: "running" | "completed" | "error" | "aborted";
+  agentCount: number;
+  phases: string[];
+  agents: WorkflowAgentSnapshot[];
+  logs: string[];
+  result?: unknown;
+  error?: string;
 }
 
 export interface SubagentUsage {
