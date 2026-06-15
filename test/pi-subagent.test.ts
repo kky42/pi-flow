@@ -1407,6 +1407,91 @@ This should not be advertised or launched.`);
     disposeSession(session);
   });
 
+  describe("workflow tool integration", () => {
+    it("runs a workflow that delegates to a real subagent and returns its text", async () => {
+      const { session, registration, model, modelRegistry } = await createSession();
+      const tool = session.getToolDefinition("workflow") as any;
+
+      registration.setResponses([fauxAssistantMessage("child analysis done")]);
+
+      const script = `export const meta = { name: 'inspect', description: 'inspect a module' };\nreturn await agent('analyze the module', { label: 'analyze' });`;
+      const result = await tool.execute(
+        "wf-text",
+        { script },
+        undefined,
+        undefined,
+        makeExecutionContext({ hasUI: false, model, modelRegistry }),
+      );
+
+      expect(result.details.status).toBe("completed");
+      expect(result.details.agentCount).toBe(1);
+      expect(result.details.result).toBe("child analysis done");
+      expect(registration.getPendingResponseCount()).toBe(0);
+
+      disposeSession(session);
+    });
+
+    it("captures schema-validated structured output from a workflow subagent", async () => {
+      const { session, registration, model, modelRegistry } = await createSession();
+      const tool = session.getToolDefinition("workflow") as any;
+
+      // Child: end on a structured_output tool call, then stop on the next turn.
+      registration.setResponses([
+        fauxAssistantMessage(
+          [fauxToolCall("structured_output", { answer: "42", confidence: 0.9 })],
+          { stopReason: "toolUse" },
+        ),
+        fauxAssistantMessage("done"),
+      ]);
+
+      const script = `export const meta = { name: 'solve', description: 'solve a task' };
+return await agent('compute the answer', {
+  label: 'solver',
+  schema: { type: 'object', properties: { answer: { type: 'string' }, confidence: { type: 'number' } }, required: ['answer'] },
+});`;
+      const result = await tool.execute(
+        "wf-struct",
+        { script },
+        undefined,
+        undefined,
+        makeExecutionContext({ hasUI: false, model, modelRegistry }),
+      );
+
+      expect(result.details.status).toBe("completed");
+      expect(result.details.result).toEqual({ answer: "42", confidence: 0.9 });
+
+      disposeSession(session);
+    });
+
+    it("does not expose Agent or workflow to a workflow's subagents", async () => {
+      const { session, registration, model, modelRegistry } = await createSession();
+      const tool = session.getToolDefinition("workflow") as any;
+      let childContext: Context | undefined;
+
+      registration.setResponses([
+        (context) => {
+          childContext = context;
+          return fauxAssistantMessage("inspected tools");
+        },
+      ]);
+
+      const script = `export const meta = { name: 'nest', description: 'nesting check' };\nreturn await agent('report available tools', { label: 'probe' });`;
+      await tool.execute(
+        "wf-nest",
+        { script },
+        undefined,
+        undefined,
+        makeExecutionContext({ hasUI: false, model, modelRegistry }),
+      );
+
+      const childToolNames = getToolNames(childContext);
+      expect(childToolNames).not.toContain("Agent");
+      expect(childToolNames).not.toContain("workflow");
+
+      disposeSession(session);
+    });
+  });
+
   describe("proactive routing scenarios", () => {
     function makeRouter(decide: (userText: string, systemPrompt: string) => unknown[] | string) {
       return (context: Context) => {

@@ -34,7 +34,7 @@ export interface WorkflowAgentCall {
 export type WorkflowAgentRunner = (
   call: WorkflowAgentCall,
   signal: AbortSignal | undefined,
-) => Promise<string>;
+) => Promise<unknown>;
 
 export interface RunWorkflowOptions {
   args?: unknown;
@@ -47,7 +47,7 @@ export interface RunWorkflowOptions {
   onLog?: (message: string) => void;
   onPhase?: (title: string) => void;
   onAgentStart?: (event: { label: string; phase?: string; subagentType: string; prompt: string }) => void;
-  onAgentEnd?: (event: { label: string; phase?: string; result: string | null }) => void;
+  onAgentEnd?: (event: { label: string; phase?: string; result: unknown }) => void;
 }
 
 export interface WorkflowRunResult<T = unknown> {

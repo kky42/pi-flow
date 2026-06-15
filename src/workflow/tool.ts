@@ -3,6 +3,7 @@ import {
   getAgentDir,
   type ExtensionAPI,
   type ExtensionContext,
+  type ExtensionFactory,
   type Theme,
   type ToolDefinition,
 } from "@earendil-works/pi-coding-agent";
@@ -15,6 +16,12 @@ import { getSubagentProfiles } from "../profiles.ts";
 import { WORKFLOW_PROMPT_GUIDELINES, WORKFLOW_PROMPT_SNIPPET } from "../prompts.ts";
 import type { SubagentUsage, WorkflowAgentSnapshot, WorkflowToolDetails } from "../types.ts";
 import { parseWorkflowScript, runWorkflow, type WorkflowAgentRunner } from "./runtime.ts";
+import {
+  createStructuredOutputTool,
+  STRUCTURED_OUTPUT_CONTRACT,
+  toolExtensionFactory,
+  type StructuredOutputCapture,
+} from "./structured-output.ts";
 
 const workflowToolParameters = Type.Object({
   script: Type.String({
@@ -101,6 +108,20 @@ export function createWorkflowTool(
         if (!model) {
           throw new Error(profile.model ? `Profile model not found: ${profile.model}` : "No model is selected");
         }
+
+        // Structured output: inject a schema-validated structured_output tool and
+        // require the subagent to end with it. The captured args become the result.
+        let capture: StructuredOutputCapture | undefined;
+        let extraExtensionFactories: ExtensionFactory[] | undefined;
+        let extraToolNames: string[] | undefined;
+        let appendInstructions: string | undefined;
+        if (call.schema !== undefined && call.schema !== null) {
+          capture = { value: undefined, called: false };
+          extraExtensionFactories = [toolExtensionFactory(createStructuredOutputTool(call.schema, capture))];
+          extraToolNames = ["structured_output"];
+          appendInstructions = STRUCTURED_OUTPUT_CONTRACT;
+        }
+
         const childId = `${toolCallId}:agent:${++agentSeq}`;
         const result = await spawnSubagent({
           toolCallId: childId,
@@ -115,11 +136,20 @@ export function createWorkflowTool(
           onProgress: undefined,
           onUsage: (usage) => options.updateStatus(ctx, childId, usage),
           excludeTools: ["Agent", "workflow"],
+          appendInstructions,
+          extraExtensionFactories,
+          extraToolNames,
         });
-        if (result.details.status === "completed") {
-          return result.details.result ?? "";
+        if (result.details.status !== "completed") {
+          throw new Error(result.details.error ?? "subagent failed");
         }
-        throw new Error(result.details.error ?? "subagent failed");
+        if (capture) {
+          if (!capture.called) {
+            throw new Error("subagent finished without calling structured_output");
+          }
+          return capture.value;
+        }
+        return result.details.result ?? "";
       };
 
       const snapshot: WorkflowToolDetails = {
