@@ -26,6 +26,15 @@ import { getSubagentProfiles, loadBuiltinSubagentProfiles } from "../src/profile
 const packageRoot = dirname(dirname(fileURLToPath(import.meta.url)));
 // pi-coding-agent 0.77.0 carries its own pi-ai instance; faux providers must register there.
 
+type FauxModelDef = { id: string; name: string; reasoning: boolean };
+type ThinkingLevel = "off" | "minimal" | "low" | "medium" | "high" | "xhigh";
+type CreateSessionOptions = {
+  maxConcurrency?: number;
+  models?: FauxModelDef[];
+  defaultModelId?: string;
+  thinkingLevel?: ThinkingLevel;
+};
+
 describe("pi-subagent", () => {
   let tempDir: string;
   let cwd: string;
@@ -74,15 +83,52 @@ describe("pi-subagent", () => {
     session.dispose();
   }
 
-  async function createSession(options: { maxConcurrency?: number } = {}) {
-    const registration = registerFauxProvider({
-      models: [{ id: "faux-thinker", name: "Faux Thinker", reasoning: true }],
+  const DEFAULT_MODEL_DEFS: FauxModelDef[] = [{ id: "faux-thinker", name: "Faux Thinker", reasoning: true }];
+
+  // Mirror the registered faux models into models.json so that subagent profile
+  // `model:` overrides resolve through ModelRegistry.find(provider, id) exactly
+  // like real custom models. Without this, find() only knows the built-in
+  // catalog and any profile model override would be filtered out as unavailable.
+  function writeModelsJson(models: Array<Model<string>>) {
+    if (models.length === 0) {
+      return;
+    }
+    const toModelDef = (m: Model<string>) => ({
+      id: m.id,
+      name: m.name,
+      api: m.api,
+      baseUrl: m.baseUrl,
+      reasoning: m.reasoning,
+      input: m.input,
+      cost: m.cost,
+      contextWindow: m.contextWindow,
+      maxTokens: m.maxTokens,
     });
+    const provider = models[0].provider;
+    const config = {
+      providers: {
+        [provider]: {
+          apiKey: "test-api-key",
+          api: models[0].api,
+          baseUrl: models[0].baseUrl,
+          models: models.map(toModelDef),
+        },
+      },
+    };
+    writeFileSync(join(agentDir, "models.json"), JSON.stringify(config, null, 2));
+  }
+
+  async function createSession(options: CreateSessionOptions = {}) {
+    const { maxConcurrency, models: modelDefs = DEFAULT_MODEL_DEFS, defaultModelId, thinkingLevel = "high" } = options;
+    const registration = registerFauxProvider({ models: modelDefs });
     registrations.push(registration);
 
-    const model = registration.getModel("faux-thinker") as Model<string>;
+    const models = modelDefs.map((def) => registration.getModel(def.id) as Model<string>);
+    const model = defaultModelId ? (registration.getModel(defaultModelId) as Model<string>) : models[0];
+
     const authStorage = AuthStorage.create(join(agentDir, "auth.json"));
     authStorage.setRuntimeApiKey(model.provider, "test-api-key");
+    writeModelsJson(models);
     const modelRegistry = ModelRegistry.create(authStorage, join(agentDir, "models.json"));
     const settingsManager = SettingsManager.inMemory({});
     const sessionManager = SessionManager.inMemory(cwd);
@@ -90,7 +136,7 @@ describe("pi-subagent", () => {
       cwd,
       agentDir,
       settingsManager,
-      extensionFactories: [createSubagentExtension(options)],
+      extensionFactories: [createSubagentExtension(maxConcurrency === undefined ? {} : { maxConcurrency })],
       noExtensions: true,
       noSkills: true,
       noPromptTemplates: true,
@@ -105,7 +151,7 @@ describe("pi-subagent", () => {
       authStorage,
       modelRegistry,
       model,
-      thinkingLevel: "high",
+      thinkingLevel,
       settingsManager,
       sessionManager,
       resourceLoader,
@@ -113,7 +159,39 @@ describe("pi-subagent", () => {
     trackSession(session);
     await session.bindExtensions({});
 
-    return { session, registration, model, modelRegistry };
+    return { session, registration, model, models, modelRegistry };
+  }
+
+  // Drive a single root delegation and capture the child session's context,
+  // stream options, model, and the root's post-delegation continuation context.
+  async function delegateOnce(
+    session: { prompt: (input: string) => Promise<unknown> },
+    registration: ReturnType<typeof registerFauxProvider>,
+    toolArgs: Record<string, unknown>,
+    opts: { childReply?: string; rootReply?: string; userPrompt?: string } = {},
+  ) {
+    const { childReply = "child done", rootReply = "reported", userPrompt = "Please delegate." } = opts;
+    const captured: {
+      childContext?: Context;
+      childOptions?: SimpleStreamOptions;
+      childModel?: Model<string>;
+      rootContinuationContext?: Context;
+    } = {};
+    registration.setResponses([
+      fauxAssistantMessage([fauxToolCall("Agent", toolArgs)], { stopReason: "toolUse" }),
+      (context, options, _state, model) => {
+        captured.childContext = context;
+        captured.childOptions = options as SimpleStreamOptions;
+        captured.childModel = model;
+        return fauxAssistantMessage(childReply);
+      },
+      (context) => {
+        captured.rootContinuationContext = context;
+        return fauxAssistantMessage(rootReply);
+      },
+    ]);
+    await session.prompt(userPrompt);
+    return captured;
   }
 
   function makeMockTheme() {
@@ -197,6 +275,20 @@ describe("pi-subagent", () => {
     expect(tool?.promptGuidelines).toContain(
       "Reach for Agent when the task matches an available agent, when you have independent work to run in parallel, or when answering would mean reading across several files.",
     );
+
+    disposeSession(session);
+  });
+
+  it("marks description and prompt required, subagent_type optional, and adds no tag/label fields", async () => {
+    const { session } = await createSession();
+
+    const tool = session.getAllTools().find((candidate) => candidate.name === "Agent");
+    const schema = tool?.parameters as { required?: string[]; properties: Record<string, unknown> } | undefined;
+    expect(schema?.required).toContain("description");
+    expect(schema?.required).toContain("prompt");
+    expect(schema?.required ?? []).not.toContain("subagent_type");
+    expect(schema?.properties).not.toHaveProperty("tag");
+    expect(schema?.properties).not.toHaveProperty("label");
 
     disposeSession(session);
   });
@@ -397,6 +489,18 @@ tools: []
 ---
 
 Ignored.`);
+    // Unparseable YAML frontmatter: parseFrontmatter throws and the profile is dropped.
+    writeFileSync(join(subagentsDir, "malformed-yaml.md"), `---
+description: : : oops
+  bad: [unclosed
+---
+
+Ignored.`);
+    // Valid frontmatter but an empty body: custom profiles require a non-empty body.
+    writeFileSync(join(subagentsDir, "empty-body.md"), `---
+description: Valid frontmatter but empty body.
+---
+`);
 
     const profiles = getSubagentProfiles(agentDir);
 
@@ -421,6 +525,8 @@ Ignored.`);
     expect(profiles.has("empty-string-tools")).toBe(false);
     expect(profiles.has("list-tools")).toBe(false);
     expect(profiles.has("empty-list-tools")).toBe(false);
+    expect(profiles.has("malformed-yaml")).toBe(false);
+    expect(profiles.has("empty-body")).toBe(false);
     expect(profiles.has("general-purpose")).toBe(true);
     expect(profiles.has("explorer")).toBe(true);
   });
@@ -461,6 +567,40 @@ Custom reviewer prompt marker.`);
     expect(getToolNames(childContext)).toEqual(["bash", "read"]);
     expect((childOptions as { reasoning?: string } | undefined)?.reasoning).toBe("low");
     expect(JSON.stringify(childContext?.messages)).toContain("Review the latest diff.");
+
+    disposeSession(session);
+  });
+
+  it("runs a custom subagent on the valid model named in its profile, not the caller's model", async () => {
+    const subagentsDir = join(agentDir, "subagents");
+    mkdirSync(subagentsDir, { recursive: true });
+    writeFileSync(join(subagentsDir, "fast-agent.md"), `---
+description: Runs on the fast model.
+model: faux/faux-fast
+---
+
+Fast agent prompt marker.`);
+
+    const { session, registration, model: callerModel } = await createSession({
+      models: [
+        { id: "faux-thinker", name: "Faux Thinker", reasoning: true },
+        { id: "faux-fast", name: "Faux Fast", reasoning: false },
+      ],
+      defaultModelId: "faux-thinker",
+    });
+    expect(callerModel.id).toBe("faux-thinker");
+
+    const captured = await delegateOnce(session, registration, {
+      description: "Fast task",
+      subagent_type: "fast-agent",
+      prompt: "Do the fast thing.",
+    });
+
+    // The child must actually stream on the profile's model (the 4th faux
+    // callback arg is the model the session ran with), not the caller's model.
+    expect(captured.childModel?.id).toBe("faux-fast");
+    expect(captured.childModel?.id).not.toBe(callerModel.id);
+    expect(captured.childContext?.systemPrompt).toContain("Fast agent prompt marker.");
 
     disposeSession(session);
   });
@@ -797,6 +937,44 @@ This should not be advertised or launched.`);
     disposeSession(session);
   });
 
+  it("does not leak a prior parent tool result into a later child session", async () => {
+    const { session, registration } = await createSession();
+    let secondChildContext: Context | undefined;
+
+    registration.setResponses([
+      // Round 1: the parent delegates, producing an Agent tool result that is
+      // appended to the parent conversation.
+      fauxAssistantMessage(
+        [fauxToolCall("Agent", { description: "First search", prompt: "First task." })],
+        { stopReason: "toolUse" },
+      ),
+      fauxAssistantMessage("FIRST_CHILD_SECRET_RESULT"),
+      // Parent continuation: delegate again now that the first tool result is in
+      // the parent history.
+      fauxAssistantMessage(
+        [fauxToolCall("Agent", { description: "Second search", prompt: "Second task." })],
+        { stopReason: "toolUse" },
+      ),
+      (context) => {
+        secondChildContext = context;
+        return fauxAssistantMessage("second child done");
+      },
+      fauxAssistantMessage("reported"),
+    ]);
+
+    await session.prompt("Delegate twice in sequence.");
+
+    const serialized = JSON.stringify(secondChildContext?.messages);
+    expect(serialized).toContain("Second task.");
+    // The second child gets a fresh context: no parent user prompt, no earlier
+    // delegated prompt, and crucially no earlier child's tool result.
+    expect(serialized).not.toContain("FIRST_CHILD_SECRET_RESULT");
+    expect(serialized).not.toContain("First task.");
+    expect(serialized).not.toContain("Delegate twice in sequence.");
+
+    disposeSession(session);
+  });
+
   it("injects the coordinator prompt into the root agent's system prompt", async () => {
     const { session, registration } = await createSession();
     let rootContext: Context | undefined;
@@ -825,7 +1003,9 @@ This should not be advertised or launched.`);
     disposeSession(session);
   });
 
-  it("resets per-turn active count so a new user turn gets a fresh maxConcurrency budget", async () => {
+  it("frees slots across user turns so a later turn can still delegate under the cap", async () => {
+    // With a live in-flight gauge (and no per-turn reset), each turn's child
+    // releases its slot on completion, so the next turn delegates under the cap.
     const { session, registration } = await createSession({ maxConcurrency: 1 });
 
     registration.setResponses([
@@ -850,6 +1030,57 @@ This should not be advertised or launched.`);
     expect(serialized).toContain("turn 1 child done");
     expect(serialized).toContain("turn 2 child done");
     expect(serialized).not.toContain("Maximum subagent concurrency reached");
+
+    disposeSession(session);
+  });
+
+  it("counts live in-flight children, not a per-turn quota", async () => {
+    const { session, registration, model, modelRegistry } = await createSession({ maxConcurrency: 2 });
+    const tool = session.getToolDefinition("Agent") as any;
+    const ctx = makeExecutionContext({ hasUI: false, model, modelRegistry });
+
+    // Two children that stay in-flight until released, plus a recovery response.
+    let release1!: () => void;
+    let release2!: () => void;
+    const gate1 = new Promise<void>((resolve) => {
+      release1 = resolve;
+    });
+    const gate2 = new Promise<void>((resolve) => {
+      release2 = resolve;
+    });
+    registration.setResponses([
+      async () => {
+        await gate1;
+        return fauxAssistantMessage("child 1 done");
+      },
+      async () => {
+        await gate2;
+        return fauxAssistantMessage("child 2 done");
+      },
+      fauxAssistantMessage("recovery child done"),
+    ]);
+
+    // The slot is taken synchronously before runSubagent's first await, so two
+    // un-awaited launches saturate the cap of 2 with both children still running.
+    const inFlight1 = tool.execute("c1", { description: "A", prompt: "Task A." }, undefined, undefined, ctx);
+    const inFlight2 = tool.execute("c2", { description: "B", prompt: "Task B." }, undefined, undefined, ctx);
+
+    // A third launch while two are genuinely in-flight must be rejected by the
+    // live cap — a per-turn quota that reset or only counted completed children
+    // would let this through.
+    const rejected = await tool.execute("c3", { description: "C", prompt: "Task C." }, undefined, undefined, ctx);
+    expect(rejected.details.status).toBe("rejected");
+    expect(rejected.details.error).toBe("Maximum subagent concurrency reached");
+
+    // Release one child: its slot frees, so a new launch now succeeds.
+    release1();
+    expect((await inFlight1).details.status).toBe("completed");
+    const recovered = await tool.execute("c4", { description: "D", prompt: "Task D." }, undefined, undefined, ctx);
+    expect(recovered.details.status).toBe("completed");
+    expect(recovered.details.result).toContain("recovery child done");
+
+    release2();
+    expect((await inFlight2).details.status).toBe("completed");
 
     disposeSession(session);
   });
@@ -887,6 +1118,43 @@ This should not be advertised or launched.`);
     expect(serialized).toContain("round 1 child 4 done");
     expect(serialized).toContain("round 2 child 4 done");
     expect(serialized).not.toContain("Maximum subagent concurrency reached");
+
+    disposeSession(session);
+  });
+
+  it("releases the slot when a child fails so a later delegation still launches", async () => {
+    const { session, registration, model, modelRegistry } = await createSession({ maxConcurrency: 1 });
+    const tool = session.getToolDefinition("Agent") as any;
+    const ctx = makeExecutionContext({ hasUI: false, model, modelRegistry });
+
+    // Drive execute() directly so the failure path is deterministic and the
+    // per-turn reset does not mask whether the finally released the slot.
+    registration.setResponses([fauxAssistantMessage("recovery child done")]);
+
+    const aborted = new AbortController();
+    aborted.abort();
+    const failed = await tool.execute(
+      "failed-agent-call",
+      { description: "Doomed search", prompt: "First task that fails." },
+      aborted.signal,
+      undefined,
+      ctx,
+    );
+    expect(failed.details.status).toBe("error");
+    expect(failed.details.error).toContain("aborted before prompt start");
+
+    // With maxConcurrency 1, the second launch is only possible if the failed
+    // child released its slot via the same finally that releases completed ones.
+    const recovered = await tool.execute(
+      "recovery-agent-call",
+      { description: "Recovery search", prompt: "Second task that succeeds." },
+      undefined,
+      undefined,
+      ctx,
+    );
+    expect(recovered.details.status).toBe("completed");
+    expect(recovered.details.error).toBeUndefined();
+    expect(recovered.details.result).toContain("recovery child done");
 
     disposeSession(session);
   });

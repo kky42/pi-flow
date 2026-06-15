@@ -812,7 +812,10 @@ export function createSubagentExtension(options: SubagentExtensionOptions = {}):
       if (!pi.getAllTools().some((tool) => tool.name === "Agent")) {
         return;
       }
-      rootState.activeCount = 0;
+      // No per-turn counter reset: activeCount is a live in-flight gauge, taken
+      // on launch and released in execute()'s finally. Slots are never carried
+      // across turns because there is no await between the increment and the
+      // try/finally, so the count is always accurate without a reset.
       return {
         systemPrompt: `${event.systemPrompt}\n\n${buildCoordinatorPrompt(filterProfilesForModelRegistry(
           getSubagentProfiles(getAgentDir()),

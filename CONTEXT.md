@@ -8,9 +8,9 @@ This context describes the domain language for a lightweight Claude Code-style s
 A delegated pi agent instance that handles a scoped task in a fresh conversation and returns a final report to its caller. In this project, the unqualified term refers to foreground delegation; background jobs are outside the current meaning.
 _Avoid_: Background task, worker, scheduled agent
 
-**Delegation Width**:
-The maximum number of direct subagents the main agent may spawn in one foreground delegation turn. In the synchronous v1 design this is a quota, not a concurrency limit.
-_Avoid_: Concurrency, parallelism
+**Global Concurrency Limit** (`maxConcurrency`):
+The maximum number of subagents allowed to run concurrently. It is a live in-flight gauge, not a per-turn quota: a slot is taken when a subagent launches and released when it completes, fails, or is aborted. In v1 only the root agent can delegate, so the limit currently bounds root-level foreground parallelism; it is named as a global cap so it can extend to nested delegation (workflows) without changing meaning.
+_Avoid_: Delegation width, fan-out quota, per-turn budget
 
 **Foreground Parallel Delegation**:
 Multiple foreground subagents launched by one caller turn and awaited before the caller continues. It is distinct from background delegation because no long-lived result retrieval or notification state is created.
