@@ -152,6 +152,7 @@ This downloads fresh GitHub fixtures across four size buckets (`octocat/Spoon-Kn
 - codebase exploration
 - codebase understanding / QA
 - small README implementation
+- a `workflow` fan-out scenario (medium and large buckets; observational by default — INCONCLUSIVE if the model does not reach for the `workflow` tool, strict only under `-- --strict-observed`)
 - small, medium, large, and huge fixture buckets
 
 To compare the same scenarios against Claude Code:
