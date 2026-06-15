@@ -1,6 +1,6 @@
 # pi-subagents
 
-Claude Code-style subagents for pi: delegate repo exploration, broad code search, and independent reviews to fresh child agents.
+Claude Code-style subagents for pi: delegate repo exploration, broad code search, and independent reviews to fresh child agents — plus dynamic `workflow`s that fan work out across many subagents and synthesize the results.
 
 ```bash
 pi install npm:@kky42/pi-subagents
@@ -59,6 +59,51 @@ Agent({
 ```
 
 The explorer returns a concise repo map, and the main agent relays the useful parts.
+
+## Workflows
+
+For fan-out work — codebase audits, multi-perspective review, broad research — ask pi for a *workflow*. The model writes a small deterministic JavaScript script that the `workflow` tool runs, fanning the work across isolated subagents and synthesizing the results.
+
+```text
+Run a workflow to audit this repo for TODOs, FIXMEs, and skipped tests, then summarize.
+```
+
+The script runs in a sandbox with these globals:
+
+- `agent(prompt, opts)` — spawn one subagent; returns its final text, or a schema-validated object when `opts.schema` is set. `opts`: `label`, `phase`, `subagent_type`, `schema`.
+- `parallel(thunks)` — run independent `() => agent(...)` thunks concurrently; results come back in input order.
+- `pipeline(items, ...stages)` — run each item through the stages in order while different items run concurrently; each stage gets `(previousValue, originalItem, index)`.
+- `phase(title)`, `log(message)`, `args` (the optional JSON passed to the tool), and `cwd`.
+
+The model writes and runs something like:
+
+```ts
+export const meta = { name: "audit", description: "find and summarize tech debt" };
+const lanes = ["TODO", "FIXME", "skipped tests"];
+const findings = await parallel(
+  lanes.map((lane) => () =>
+    agent(`Find every ${lane} in this repo. Report file:line.`, {
+      subagent_type: "explorer",
+      label: `find ${lane}`,
+    }),
+  ),
+);
+return await agent(`Summarize these findings:\n${findings.join("\n\n")}`, { label: "synthesize" });
+```
+
+Key properties:
+
+- **Real subagents.** Each `agent()` runs through the same spawn path as the `Agent` tool, so `subagent_type` gives it that profile's model, thinking level, tools, and system prompt.
+- **Structured output.** Pass a JSON Schema as `opts.schema` and `agent()` returns a validated object instead of text — ideal for composing results in `parallel`/`pipeline`.
+- **Deterministic.** `Date.now()`, `Math.random()`, and `new Date()` are rejected at parse time, so a workflow replays identically given the same agent outputs.
+- **Bounded.** Workflow fan-out shares the same global concurrency cap as the `Agent` tool; excess agents queue and drain as slots free.
+- **Foreground.** A workflow is a single blocking tool call. Subagents cannot launch workflows or other subagents.
+
+The `workflow` tool is on by default. Disable it for a subagents-only setup:
+
+```ts
+createSubagentExtension({ workflow: false });
+```
 
 ## Custom Subagents
 
