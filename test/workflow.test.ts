@@ -1,16 +1,34 @@
+import { Theme } from "@earendil-works/pi-coding-agent";
 import { describe, expect, it } from "vitest";
 import { ConcurrencyLimiter } from "../src/core/concurrency.ts";
 import { createSubagentExtension } from "../src/pi-subagent.ts";
+import type { WorkflowToolDetails } from "../src/types.ts";
 import {
   parseWorkflowScript,
   runWorkflow,
   type WorkflowAgentRunner,
 } from "../src/workflow/runtime.ts";
+import { createWorkflowTool } from "../src/workflow/tool.ts";
 
 const META = "export const meta = { name: 'wf', description: 'a workflow' };\n";
 
 function delay(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function makeMockTheme(): Theme {
+  const theme = new Theme({} as never, {} as never, "truecolor");
+  (theme as unknown as { fg: (color: string, text: string) => string }).fg = (_color, text) => text;
+  (theme as unknown as { bold: (text: string) => string }).bold = (text) => text;
+  return theme;
+}
+
+function stripAnsi(value: string): string {
+  return value.replace(/\x1b\[[0-9;]*m/g, "");
+}
+
+function renderToText(component: { render: (width: number) => string[] }): string {
+  return stripAnsi(component.render(200).join("\n"));
 }
 
 describe("parseWorkflowScript", () => {
@@ -164,6 +182,112 @@ describe("runWorkflow", () => {
         runAgent: echo,
       }),
     ).rejects.toThrow(/structured-cloneable/);
+  });
+
+  it("emits phase, agent start/end, and failure-log progress events in order", async () => {
+    const events: string[] = [];
+    const runAgent: WorkflowAgentRunner = async (call) => {
+      if (call.label === "boom") {
+        throw new Error("kaboom");
+      }
+      return call.label;
+    };
+    await runWorkflow(
+      `${META}phase('scan');\nawait agent('a', { label: 'ok' });\nawait agent('b', { label: 'boom' });`,
+      {
+        cwd: "/tmp",
+        limiter: new ConcurrencyLimiter(4),
+        runAgent,
+        onPhase: (title) => events.push(`phase:${title}`),
+        onAgentStart: (event) => events.push(`start:${event.label}`),
+        onAgentEnd: (event) => events.push(`end:${event.label}:${event.result === null ? "fail" : "ok"}`),
+        onLog: () => events.push("log"),
+      },
+    );
+    expect(events).toContain("phase:scan");
+    expect(events).toContain("start:ok");
+    expect(events).toContain("end:ok:ok");
+    expect(events).toContain("start:boom");
+    expect(events).toContain("end:boom:fail");
+    expect(events).toContain("log");
+    expect(events.indexOf("phase:scan")).toBeLessThan(events.indexOf("start:ok"));
+    expect(events.indexOf("start:ok")).toBeLessThan(events.indexOf("end:ok:ok"));
+  });
+});
+
+describe("workflow tool rendering", () => {
+  const tool = createWorkflowTool({
+    limiter: new ConcurrencyLimiter(4),
+    getThinkingLevel: () => "high",
+    updateStatus: () => {},
+  }) as unknown as {
+    renderCall: (args: unknown, theme: Theme, context: { executionStarted: boolean }) => { render: (width: number) => string[] };
+    renderResult: (result: unknown, options: unknown, theme: Theme) => { render: (width: number) => string[] };
+  };
+
+  it("renders the call label and hides it once execution starts", () => {
+    const theme = makeMockTheme();
+    const before = renderToText(tool.renderCall({ script: "export const meta = {}" }, theme, { executionStarted: false }));
+    expect(before).toContain("Workflow");
+    const after = renderToText(tool.renderCall({ script: "..." }, theme, { executionStarted: true }));
+    expect(after.trim()).toBe("");
+  });
+
+  it("renders a running snapshot with per-agent status marks and counts", () => {
+    const theme = makeMockTheme();
+    const details: WorkflowToolDetails = {
+      name: "audit",
+      status: "running",
+      agentCount: 3,
+      phases: ["scan"],
+      agents: [
+        { label: "alpha", status: "running" },
+        { label: "beta", phase: "scan", status: "done" },
+        { label: "gamma", status: "error" },
+      ],
+      logs: [],
+    };
+    const text = renderToText(tool.renderResult({ content: [{ type: "text", text: "x" }], details }, {}, theme));
+    expect(text).toContain("Workflow(audit)");
+    expect(text).toContain("running");
+    expect(text).toContain("1/3 done");
+    expect(text).toContain("1 failed");
+    expect(text).toContain("• alpha");
+    expect(text).toContain("✓ scan / beta");
+    expect(text).toContain("✗ gamma");
+  });
+
+  it("renders a completed snapshot and surfaces a failure message", () => {
+    const theme = makeMockTheme();
+    const completed: WorkflowToolDetails = {
+      name: "done-flow",
+      status: "completed",
+      agentCount: 1,
+      phases: [],
+      agents: [{ label: "only", status: "done" }],
+      logs: [],
+    };
+    const completedText = renderToText(
+      tool.renderResult({ content: [{ type: "text", text: "x" }], details: completed }, {}, theme),
+    );
+    expect(completedText).toContain("Workflow(done-flow)");
+    expect(completedText).toContain("completed");
+    expect(completedText).toContain("1/1 done");
+
+    const failed: WorkflowToolDetails = {
+      name: "broke",
+      status: "error",
+      agentCount: 0,
+      phases: [],
+      agents: [],
+      logs: [],
+      error: "script blew up",
+    };
+    const failedText = renderToText(
+      tool.renderResult({ content: [{ type: "text", text: "x" }], details: failed }, {}, theme),
+    );
+    expect(failedText).toContain("error");
+    expect(failedText).toContain("script blew up");
   });
 });
 

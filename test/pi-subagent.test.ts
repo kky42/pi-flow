@@ -1490,6 +1490,45 @@ return await agent('compute the answer', {
 
       disposeSession(session);
     });
+
+    it("streams live progress snapshots as phases and agents advance", async () => {
+      const { session, registration, model, modelRegistry } = await createSession();
+      const tool = session.getToolDefinition("workflow") as any;
+      const updates: any[] = [];
+
+      registration.setResponses([
+        fauxAssistantMessage("first done"),
+        fauxAssistantMessage("second done"),
+      ]);
+
+      const script = `export const meta = { name: 'two', description: 'two-phase flow' };
+phase('scan');
+const a = await agent('first', { label: 'one' });
+phase('report');
+const b = await agent('second', { label: 'two' });
+return [a, b];`;
+      const result = await tool.execute(
+        "wf-progress",
+        { script },
+        undefined,
+        (update: any) => updates.push(update),
+        makeExecutionContext({ hasUI: true, model, modelRegistry, tui: true }),
+      );
+
+      expect(result.details.status).toBe("completed");
+      expect(result.details.phases).toEqual(["scan", "report"]);
+      expect(result.details.agents.map((agent: any) => agent.status)).toEqual(["done", "done"]);
+      expect(result.details.result).toEqual(["first done", "second done"]);
+
+      // Progress was streamed incrementally, not just at the end.
+      expect(updates.length).toBeGreaterThan(0);
+      expect(
+        updates.some((update) => update.details.agents.some((agent: any) => agent.status === "running")),
+      ).toBe(true);
+      expect(updates.some((update) => update.details.phases.includes("report"))).toBe(true);
+
+      disposeSession(session);
+    });
   });
 
   describe("proactive routing scenarios", () => {
