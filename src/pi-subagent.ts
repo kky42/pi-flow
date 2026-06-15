@@ -16,6 +16,7 @@ import {
   buildCoordinatorPrompt,
 } from "./prompts.ts";
 import { getSubagentProfiles } from "./profiles.ts";
+import { ConcurrencyLimiter } from "./core/concurrency.ts";
 import { filterProfilesForModelRegistry, resolveProfileModel } from "./core/model.ts";
 import { spawnSubagent } from "./core/spawn.ts";
 import { textResult } from "./core/progress.ts";
@@ -47,8 +48,8 @@ const agentToolParameters = Type.Object({
 type AgentToolParams = Static<typeof agentToolParameters>;
 
 interface DelegationState {
+  limiter: ConcurrencyLimiter;
   maxConcurrency: number;
-  activeCount: number;
   progressEnabled: boolean;
 }
 
@@ -322,7 +323,8 @@ function createAgentTool(
         });
       }
 
-      if (state.activeCount >= effectiveState.maxConcurrency) {
+      const release = state.limiter.tryAcquire();
+      if (!release) {
         return textResult(
           `Maximum subagent concurrency reached for this agent run. maxConcurrency: ${effectiveState.maxConcurrency}.`,
           {
@@ -334,7 +336,6 @@ function createAgentTool(
         );
       }
 
-      state.activeCount++;
       try {
         return await spawnSubagent({
           toolCallId,
@@ -351,7 +352,7 @@ function createAgentTool(
           excludeTools: ["Agent"],
         });
       } finally {
-        state.activeCount = Math.max(0, state.activeCount - 1);
+        release();
       }
     },
     renderCall(args, theme, context) {
@@ -387,8 +388,8 @@ export function createSubagentExtension(options: SubagentExtensionOptions = {}):
 
   return function subagentExtension(pi: ExtensionAPI) {
     const rootState: DelegationState = {
+      limiter: new ConcurrencyLimiter(maxConcurrency),
       maxConcurrency,
-      activeCount: 0,
       progressEnabled: false,
     };
     const usageStatusState = createUsageStatusState();
@@ -416,10 +417,10 @@ export function createSubagentExtension(options: SubagentExtensionOptions = {}):
       if (!pi.getAllTools().some((tool) => tool.name === "Agent")) {
         return;
       }
-      // No per-turn counter reset: activeCount is a live in-flight gauge, taken
-      // on launch and released in execute()'s finally. Slots are never carried
-      // across turns because there is no await between the increment and the
-      // try/finally, so the count is always accurate without a reset.
+      // No per-turn counter reset: the shared ConcurrencyLimiter takes a slot
+      // synchronously in execute() before the first await and releases it in the
+      // finally. Acquisition is synchronous and release always runs, so the
+      // in-flight count stays accurate across turns without a reset.
       return {
         systemPrompt: `${event.systemPrompt}\n\n${buildCoordinatorPrompt(filterProfilesForModelRegistry(
           getSubagentProfiles(getAgentDir()),
