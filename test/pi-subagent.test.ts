@@ -231,19 +231,33 @@ describe("pi-subagent", () => {
     modelRegistry,
     tui = false,
     onStatus,
+    projectTrusted = false,
+    persistedSession = false,
   }: {
     hasUI: boolean;
     model: Model<string>;
     modelRegistry: ModelRegistry;
     tui?: boolean;
     onStatus?: (key: string, text: string | undefined) => void;
+    projectTrusted?: boolean;
+    persistedSession?: boolean;
   }) {
     const theme = makeMockTheme();
+    const sessionDir = join(tempDir, "sessions");
     return {
       hasUI,
       cwd,
       model,
       modelRegistry,
+      sessionManager: persistedSession
+        ? {
+            isPersisted: () => true,
+            getSessionFile: () => join(sessionDir, "session.jsonl"),
+            getSessionDir: () => sessionDir,
+            getSessionId: () => "test-session",
+          }
+        : undefined,
+      isProjectTrusted: () => projectTrusted,
       ui: {
         getAllThemes: () => (tui ? [{ name: "test", path: "test-theme.json" }] : []),
         setStatus: (key: string, text: string | undefined) => onStatus?.(key, text),
@@ -1003,6 +1017,32 @@ This should not be advertised or launched.`);
     disposeSession(session);
   });
 
+  it("advertises saved workflows in the root system prompt", async () => {
+    mkdirSync(join(agentDir, "workflows"), { recursive: true });
+    writeFileSync(
+      join(agentDir, "workflows", "audit.js"),
+      `export const meta = { name: 'audit-todos', description: 'Find TODOs and summarize debt. Use before cleanup planning.' };\nreturn await agent('audit');`,
+    );
+
+    const { session, registration } = await createSession();
+    let rootContext: Context | undefined;
+
+    registration.setResponses([
+      (context) => {
+        rootContext = context;
+        return fauxAssistantMessage("noted");
+      },
+    ]);
+
+    await session.prompt("Can you clean up technical debt?");
+
+    expect(rootContext?.systemPrompt).toContain("Saved workflows");
+    expect(rootContext?.systemPrompt).toContain("audit-todos: Find TODOs and summarize debt. Use before cleanup planning.");
+    expect(rootContext?.systemPrompt).toContain("Use `{ name: 'saved-workflow-name', args }`");
+
+    disposeSession(session);
+  });
+
   it("frees slots across user turns so a later turn can still delegate under the cap", async () => {
     // With a live in-flight gauge (and no per-turn reset), each turn's child
     // releases its slot on completion, so the next turn delegates under the cap.
@@ -1426,6 +1466,105 @@ This should not be advertised or launched.`);
       expect(result.details.status).toBe("completed");
       expect(result.details.agentCount).toBe(1);
       expect(result.details.result).toBe("child analysis done");
+      expect(registration.getPendingResponseCount()).toBe(0);
+
+      disposeSession(session);
+    });
+
+    it("runs a saved workflow by name", async () => {
+      mkdirSync(join(agentDir, "workflows"), { recursive: true });
+      writeFileSync(
+        join(agentDir, "workflows", "saved-review.js"),
+        `export const meta = { name: 'saved-review', description: 'Review through a saved workflow' };\nreturn await agent('saved workflow task', { label: 'saved' });`,
+      );
+
+      const { session, registration, model, modelRegistry } = await createSession();
+      const tool = session.getToolDefinition("workflow") as any;
+
+      registration.setResponses([fauxAssistantMessage("saved child done")]);
+
+      const result = await tool.execute(
+        "wf-saved",
+        { name: "saved-review" },
+        undefined,
+        undefined,
+        makeExecutionContext({ hasUI: false, model, modelRegistry }),
+      );
+
+      expect(result.details.status).toBe("completed");
+      expect(result.details.source).toBe("saved");
+      expect(result.details.sourcePath).toContain("saved-review.js");
+      expect(result.details.result).toBe("saved child done");
+
+      disposeSession(session);
+    });
+
+    it("returns the saved workflow roster when a saved workflow name is unknown", async () => {
+      mkdirSync(join(agentDir, "workflows"), { recursive: true });
+      writeFileSync(
+        join(agentDir, "workflows", "known.js"),
+        `export const meta = { name: 'known-flow', description: 'Known flow' };\nreturn await agent('known');`,
+      );
+
+      const { session, model, modelRegistry } = await createSession();
+      const tool = session.getToolDefinition("workflow") as any;
+
+      const result = await tool.execute(
+        "wf-missing",
+        { name: "missing-flow" },
+        undefined,
+        undefined,
+        makeExecutionContext({ hasUI: false, model, modelRegistry }),
+      );
+
+      expect(result.details.status).toBe("error");
+      expect(result.content[0].text).toContain('Unknown saved workflow "missing-flow"');
+      expect(result.content[0].text).toContain("known-flow");
+
+      disposeSession(session);
+    });
+
+    it("persists inline scripts and resumes an edited scriptPath from a previous run id", async () => {
+      const { session, registration, model, modelRegistry } = await createSession();
+      const tool = session.getToolDefinition("workflow") as any;
+
+      registration.setResponses([fauxAssistantMessage("first v1"), fauxAssistantMessage("second v1")]);
+
+      const script = `export const meta = { name: 'resume_flow', description: 'Resume test flow' };
+const a = await agent('first prompt', { label: 'first' });
+const b = await agent('second prompt', { label: 'second' });
+return [a, b];`;
+      const first = await tool.execute(
+        "wf-resume-1",
+        { script },
+        undefined,
+        undefined,
+        makeExecutionContext({ hasUI: false, model, modelRegistry, persistedSession: true }),
+      );
+
+      expect(first.details.status).toBe("completed");
+      expect(first.details.scriptPath).toContain("resume_flow");
+      expect(first.details.runId).toMatch(/^wf_/);
+      expect(first.details.result).toEqual(["first v1", "second v1"]);
+
+      writeFileSync(
+        first.details.scriptPath,
+        script.replace("second prompt", "second prompt changed"),
+      );
+      registration.setResponses([fauxAssistantMessage("second v2")]);
+
+      const second = await tool.execute(
+        "wf-resume-2",
+        { scriptPath: first.details.scriptPath, resumeFromRunId: first.details.runId },
+        undefined,
+        undefined,
+        makeExecutionContext({ hasUI: false, model, modelRegistry, persistedSession: true }),
+      );
+
+      expect(second.details.status).toBe("completed");
+      expect(second.details.source).toBe("path");
+      expect(second.details.cachedAgentCount).toBe(1);
+      expect(second.details.result).toEqual(["first v1", "second v2"]);
       expect(registration.getPendingResponseCount()).toBe(0);
 
       disposeSession(session);

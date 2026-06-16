@@ -1,3 +1,4 @@
+import type { SavedWorkflow } from "./workflow/registry.ts";
 import type { SubagentProfile } from "./types.ts";
 
 export const AGENT_PROMPT_SNIPPET =
@@ -18,12 +19,13 @@ export const AGENT_PROMPT_GUIDELINES = [
 ];
 
 export const WORKFLOW_PROMPT_SNIPPET =
-  "Run a deterministic JavaScript workflow that fans subagents out and synthesizes their results, when the user asks for a workflow or multi-agent orchestration.";
+  "Run a saved or ad-hoc deterministic JavaScript workflow that fans subagents out and synthesizes their results, when the user asks for a workflow or multi-agent orchestration.";
 
 export const WORKFLOW_PROMPT_GUIDELINES = [
-  "Use workflow only when the user explicitly asks for a workflow, fan-out, or multi-agent orchestration, or when a task decomposes into many independent subagent runs that you then synthesize.",
-  "Pass one raw JavaScript string in the required `script` parameter. No Markdown fences, no prose around it.",
-  "The script's first statement must be `export const meta = { name: 'short_snake_case', description: 'non-empty description' }`. meta must be a plain literal.",
+  "Use workflow only when the user explicitly asks for a workflow, fan-out, or multi-agent orchestration, when a saved workflow matches the user's request, or when a task decomposes into many independent subagent runs that you then synthesize.",
+  "Prefer `workflow({ name, args })` when an available saved workflow matches the request. Use `workflow({ scriptPath, resumeFromRunId, args })` to rerun or resume an edited persisted script. Use inline `script` only for ad-hoc orchestration.",
+  "For inline scripts, pass one raw JavaScript string in the `script` parameter. No Markdown fences, no prose around it. Inline runs return `scriptPath` and `runId` for later editing/resume.",
+  "The script's first statement must be `export const meta = { name: 'short_name', description: 'non-empty description' }`. meta must be a plain literal.",
   "Available globals: agent(prompt, opts), parallel(thunks), pipeline(items, ...stages), phase(title), log(message), args, cwd. Every workflow must call agent() at least once.",
   "Write plain JavaScript only. Do not use TypeScript syntax, import/require, fs, or Date.now()/Math.random()/new Date() (workflows must be deterministic).",
   "parallel() takes functions, not promises: `await parallel(items.map(item => () => agent('...', { label: '...' })))`. Results come back in input order.",
@@ -39,13 +41,34 @@ function formatAvailableAgents(profiles: Map<string, SubagentProfile>): string {
     .join("\n");
 }
 
-export function buildWorkflowPrompt(profiles: Map<string, SubagentProfile>): string {
+function truncateWorkflowText(text: string, maxLength = 180): string {
+  return text.length > maxLength ? `${text.slice(0, maxLength - 1)}…` : text;
+}
+
+function formatSavedWorkflows(workflows: SavedWorkflow[], maxItems = 20): string {
+  if (workflows.length === 0) {
+    return "";
+  }
+  const shown = workflows.slice(0, maxItems);
+  const lines = shown.map((workflow) => `- ${workflow.name}: ${truncateWorkflowText(workflow.description)}`);
+  if (workflows.length > shown.length) {
+    lines.push(`- … ${workflows.length - shown.length} more saved workflow(s) not shown.`);
+  }
+  return `\n\nSaved workflows:\n${lines.join("\n")}`;
+}
+
+export function buildWorkflowPrompt(profiles: Map<string, SubagentProfile>, savedWorkflows: SavedWorkflow[] = []): string {
   return `# Dynamic Workflows
 
-The \`workflow\` tool runs a deterministic JavaScript script that orchestrates many subagents and synthesizes their results. Reach for it when the user asks for a workflow or fan-out, or when a task splits into many independent subagent runs.
+The \`workflow\` tool runs a saved or ad-hoc deterministic JavaScript script that orchestrates many subagents and synthesizes their results. Reach for it when the user asks for a workflow or fan-out, when a saved workflow matches the request, or when a task splits into many independent subagent runs.
 
-Script contract:
-- First statement: \`export const meta = { name: 'short_snake_case', description: 'non-empty' }\` (a plain literal; \`phases\` optional).
+Tool input:
+- Use \`{ name: 'saved-workflow-name', args }\` for a saved workflow listed below.
+- Use \`{ scriptPath, args }\` to run a persisted script file. Add \`resumeFromRunId\` to reuse cached agent results from a previous run's unchanged prefix.
+- Use \`{ script, args }\` for ad-hoc orchestration. Inline runs return \`scriptPath\` and \`runId\` for later editing/resume. Provide exactly one of \`name\`, \`scriptPath\`, or \`script\`.
+
+Inline script contract:
+- First statement: \`export const meta = { name: 'short_name', description: 'non-empty' }\` (a plain literal; \`phases\` optional).
 - Globals: agent(prompt, opts), parallel(thunks), pipeline(items, ...stages), phase(title), log(message), args, cwd. Call agent() at least once.
 - Plain JavaScript only; no imports, no Date.now()/Math.random()/new Date() (scripts must be deterministic).
 - parallel() takes thunks: \`await parallel(items.map(i => () => agent('...', { label: '...' })))\`. pipeline(items, ...stages) pipelines each item through stages while items run concurrently — prefer it for multi-stage work (no barrier between stages); use parallel() only when you need all results together.
@@ -53,7 +76,7 @@ Script contract:
 Each agent() spawns a fresh subagent. Set \`subagent_type\` to inherit a profile's model, thinking, tools, and system prompt:
 ${formatAvailableAgents(profiles)}
 
-Subagents cannot launch workflows or other subagents, and do not inherit parent context — brief each agent() prompt fully. Subagent fan-out is bounded by the same global concurrency cap as the Agent tool; the workflow queues excess agents and drains them as slots free.`;
+Subagents cannot launch workflows or other subagents, and do not inherit parent context — brief each agent() prompt fully. Subagent fan-out is bounded by the same global concurrency cap as the Agent tool; the workflow queues excess agents and drains them as slots free.${formatSavedWorkflows(savedWorkflows)}`;
 }
 
 export function buildCoordinatorPrompt(profiles: Map<string, SubagentProfile>): string {

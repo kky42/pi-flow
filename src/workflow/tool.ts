@@ -14,7 +14,21 @@ import { spawnSubagent } from "../core/spawn.ts";
 import { getSubagentProfiles } from "../profiles.ts";
 import { WORKFLOW_PROMPT_GUIDELINES, WORKFLOW_PROMPT_SNIPPET } from "../prompts.ts";
 import type { SubagentUsage, WorkflowAgentSnapshot, WorkflowToolDetails } from "../types.ts";
-import { parseWorkflowScript, runWorkflow, type WorkflowAgentRunner } from "./runtime.ts";
+import {
+  createWorkflowJournalWriter,
+  createWorkflowRunIdentity,
+  getSessionWorkflowDir,
+  loadWorkflowJournal,
+  persistWorkflowScript,
+  type WorkflowJournalWriter,
+} from "./journal.ts";
+import { loadSavedWorkflowRegistry, loadWorkflowScriptPath } from "./registry.ts";
+import {
+  parseWorkflowScript,
+  runWorkflow,
+  type WorkflowAgentRunner,
+  type WorkflowCachedAgentResult,
+} from "./runtime.ts";
 import {
   createStructuredOutputTool,
   STRUCTURED_OUTPUT_CONTRACT,
@@ -23,15 +37,36 @@ import {
 } from "./structured-output.ts";
 
 const workflowToolParameters = Type.Object({
-  script: Type.String({
-    description: [
-      "Raw JavaScript workflow script (no Markdown fences).",
-      "First statement: export const meta = { name: 'short_snake_case', description: 'non-empty' }.",
-      "Use agent(prompt, opts), parallel(thunks), pipeline(items, ...stages), phase(title), log(message), args, cwd. Must call agent() at least once.",
-    ].join(" "),
-  }),
+  script: Type.Optional(
+    Type.String({
+      description: [
+        "Raw JavaScript workflow script (no Markdown fences) for an ad-hoc workflow.",
+        "First statement: export const meta = { name: 'short_name', description: 'non-empty' }.",
+        "Use agent(prompt, opts), parallel(thunks), pipeline(items, ...stages), phase(title), log(message), args, cwd. Must call agent() at least once.",
+        "Provide exactly one of `script`, `name`, or `scriptPath`."
+      ].join(" "),
+    }),
+  ),
+  name: Type.Optional(
+    Type.String({
+      description:
+        "Name of a saved workflow from ~/.pi/agent/workflows or trusted .pi/workflows. Provide exactly one of `script`, `name`, or `scriptPath`.",
+    }),
+  ),
+  scriptPath: Type.Optional(
+    Type.String({
+      description:
+        "Path to a saved or session-persisted workflow script. The path must resolve inside an allowed workflow root. Provide exactly one of `script`, `name`, or `scriptPath`.",
+    }),
+  ),
   args: Type.Optional(
     Type.Any({ description: "Optional JSON value exposed to the script as the global `args`." }),
+  ),
+  resumeFromRunId: Type.Optional(
+    Type.String({
+      description:
+        "Optional previous workflow run id to resume from. Cached agent results are reused for the longest unchanged prefix of agent() calls.",
+    }),
   ),
 });
 
@@ -63,6 +98,93 @@ function isAbortMessage(message: string): boolean {
   return /\babort(?:ed)?\b/i.test(message);
 }
 
+function isProjectTrusted(ctx: ExtensionContext): boolean {
+  try {
+    return ctx.isProjectTrusted();
+  } catch {
+    return false;
+  }
+}
+
+function formatAvailableWorkflowNames(names: string[]): string {
+  return names.length ? names.join(", ") : "none";
+}
+
+type WorkflowSource =
+  | {
+      ok: true;
+      script: string;
+      source: "inline" | "saved" | "path";
+      sourcePath?: string;
+      requestedName?: string;
+      warnings: string[];
+    }
+  | { ok: false; message: string; warnings: string[] };
+
+function resolveWorkflowSource(params: WorkflowToolParams, ctx: ExtensionContext): WorkflowSource {
+  const inlineScript = typeof params.script === "string" && params.script.trim() ? params.script : undefined;
+  const savedName = typeof params.name === "string" && params.name.trim() ? params.name.trim() : undefined;
+  const scriptPath = typeof params.scriptPath === "string" && params.scriptPath.trim() ? params.scriptPath.trim() : undefined;
+  const sourceCount = Number(Boolean(inlineScript)) + Number(Boolean(savedName)) + Number(Boolean(scriptPath));
+  if (sourceCount !== 1) {
+    return {
+      ok: false,
+      message:
+        "Workflow requires exactly one non-empty source: `script` for an ad-hoc workflow, `name` for a saved workflow, or `scriptPath` for a persisted script.",
+      warnings: [],
+    };
+  }
+  if (inlineScript) {
+    return { ok: true, script: inlineScript, source: "inline", warnings: [] };
+  }
+
+  const sessionWorkflowDir = getSessionWorkflowDir(ctx);
+  const projectTrusted = isProjectTrusted(ctx);
+  if (scriptPath) {
+    const result = loadWorkflowScriptPath(scriptPath, {
+      agentDir: getAgentDir(),
+      cwd: ctx.cwd,
+      projectTrusted,
+      sessionWorkflowDir,
+    });
+    if (!result.ok) {
+      return { ok: false, message: result.message, warnings: result.warnings };
+    }
+    return {
+      ok: true,
+      script: result.workflow.script,
+      source: "path",
+      sourcePath: result.workflow.path,
+      requestedName: result.workflow.meta.name,
+      warnings: result.warnings,
+    };
+  }
+
+  const registry = loadSavedWorkflowRegistry({
+    agentDir: getAgentDir(),
+    cwd: ctx.cwd,
+    projectTrusted,
+  });
+  const workflow = registry.workflows.get(savedName ?? "");
+  if (!workflow) {
+    return {
+      ok: false,
+      message: `Unknown saved workflow "${savedName}". Available workflows: ${formatAvailableWorkflowNames([
+        ...registry.workflows.keys(),
+      ].sort())}.`,
+      warnings: registry.warnings,
+    };
+  }
+  return {
+    ok: true,
+    script: workflow.script,
+    source: "saved",
+    sourcePath: workflow.path,
+    requestedName: savedName,
+    warnings: registry.warnings,
+  };
+}
+
 export function createWorkflowTool(
   options: CreateWorkflowToolOptions,
 ): ToolDefinition<typeof workflowToolParameters, WorkflowToolDetails> {
@@ -70,15 +192,28 @@ export function createWorkflowTool(
     name: "workflow",
     label: "Workflow",
     description:
-      "Run a deterministic JavaScript workflow that orchestrates multiple subagents with agent(), parallel(), and pipeline(), then synthesizes their results. `script` is required raw JavaScript starting with `export const meta = { name, description }` and must call agent() at least once.",
+      "Run a saved, session-persisted, or ad-hoc deterministic JavaScript workflow that orchestrates multiple subagents with agent(), parallel(), and pipeline(), then synthesizes their results. Provide exactly one of `name` (saved workflow), `scriptPath` (persisted script), or `script` (raw JavaScript starting with `export const meta = { name, description }`). Use `resumeFromRunId` with `scriptPath` to reuse cached agent results for the longest unchanged prefix. Every workflow must call agent() at least once.",
     promptSnippet: WORKFLOW_PROMPT_SNIPPET,
     promptGuidelines: WORKFLOW_PROMPT_GUIDELINES,
     parameters: workflowToolParameters,
     async execute(toolCallId, params, signal, onUpdate, ctx) {
-      const script = normalizeWorkflowScript(params.script);
+      const source = resolveWorkflowSource(params, ctx);
+      if (!source.ok) {
+        return workflowResult(source.message, {
+          name: "workflow",
+          status: "error",
+          agentCount: 0,
+          phases: [],
+          agents: [],
+          logs: source.warnings,
+          error: source.message,
+        });
+      }
+
+      const script = normalizeWorkflowScript(source.script);
 
       // Parse up front: surfaces meta + script errors before any subagent runs.
-      let metaName = "workflow";
+      let metaName = source.requestedName ?? "workflow";
       try {
         metaName = parseWorkflowScript(script).meta.name;
       } catch (error) {
@@ -89,9 +224,129 @@ export function createWorkflowTool(
           agentCount: 0,
           phases: [],
           agents: [],
-          logs: [],
+          logs: source.warnings,
+          source: source.source,
+          sourcePath: source.sourcePath,
+          scriptPath: source.sourcePath,
           error: message,
         });
+      }
+
+      const sessionWorkflowDir = getSessionWorkflowDir(ctx);
+      const identity = createWorkflowRunIdentity(script, params.args);
+      let scriptPath = source.sourcePath;
+      if (source.source === "inline" && sessionWorkflowDir) {
+        try {
+          scriptPath = await persistWorkflowScript({
+            dir: sessionWorkflowDir,
+            metaName,
+            scriptHash: identity.scriptHash,
+            script,
+          });
+        } catch (error) {
+          const message = `Workflow persistence failed: ${error instanceof Error ? error.message : String(error)}`;
+          return workflowResult(message, {
+            name: metaName,
+            status: "error",
+            agentCount: 0,
+            phases: [],
+            agents: [],
+            logs: source.warnings,
+            source: source.source,
+            sourcePath: source.sourcePath,
+            runId: identity.runId,
+            error: message,
+          });
+        }
+      }
+
+      let resumeAgentResults: WorkflowCachedAgentResult[] | undefined = undefined;
+      if (params.resumeFromRunId) {
+        if (!sessionWorkflowDir) {
+          const message = "Cannot resume workflow: current session has no persisted workflow state.";
+          return workflowResult(message, {
+            name: metaName,
+            status: "error",
+            agentCount: 0,
+            phases: [],
+            agents: [],
+            logs: source.warnings,
+            source: source.source,
+            sourcePath: source.sourcePath,
+            scriptPath,
+            runId: identity.runId,
+            resumeFromRunId: params.resumeFromRunId,
+            error: message,
+          });
+        }
+        let journal;
+        try {
+          journal = await loadWorkflowJournal(sessionWorkflowDir, params.resumeFromRunId);
+        } catch (error) {
+          const message = `Cannot resume workflow: ${error instanceof Error ? error.message : String(error)}`;
+          return workflowResult(message, {
+            name: metaName,
+            status: "error",
+            agentCount: 0,
+            phases: [],
+            agents: [],
+            logs: source.warnings,
+            source: source.source,
+            sourcePath: source.sourcePath,
+            scriptPath,
+            runId: identity.runId,
+            resumeFromRunId: params.resumeFromRunId,
+            error: message,
+          });
+        }
+        if (!journal) {
+          const message = `Cannot resume workflow: run journal not found for ${params.resumeFromRunId}.`;
+          return workflowResult(message, {
+            name: metaName,
+            status: "error",
+            agentCount: 0,
+            phases: [],
+            agents: [],
+            logs: source.warnings,
+            source: source.source,
+            sourcePath: source.sourcePath,
+            scriptPath,
+            runId: identity.runId,
+            resumeFromRunId: params.resumeFromRunId,
+            error: message,
+          });
+        }
+        resumeAgentResults = journal.agentResults;
+      }
+
+      let journalWriter: WorkflowJournalWriter | undefined;
+      if (sessionWorkflowDir) {
+        try {
+          journalWriter = await createWorkflowJournalWriter({
+            dir: sessionWorkflowDir,
+            identity,
+            name: metaName,
+            source: source.source,
+            scriptPath,
+            resumeFromRunId: params.resumeFromRunId,
+          });
+        } catch (error) {
+          const message = `Workflow journal setup failed: ${error instanceof Error ? error.message : String(error)}`;
+          return workflowResult(message, {
+            name: metaName,
+            status: "error",
+            agentCount: 0,
+            phases: [],
+            agents: [],
+            logs: source.warnings,
+            source: source.source,
+            sourcePath: source.sourcePath,
+            scriptPath,
+            runId: identity.runId,
+            resumeFromRunId: params.resumeFromRunId,
+            error: message,
+          });
+        }
       }
 
       const profiles = filterProfilesForModelRegistry(getSubagentProfiles(getAgentDir()), ctx.modelRegistry);
@@ -156,7 +411,14 @@ export function createWorkflowTool(
         agentCount: 0,
         phases: [],
         agents: [],
-        logs: [],
+        logs: [...source.warnings],
+        source: source.source,
+        sourcePath: source.sourcePath,
+        scriptPath,
+        runId: identity.runId,
+        journalPath: journalWriter?.path,
+        resumeFromRunId: params.resumeFromRunId,
+        cachedAgentCount: 0,
       };
       const emit = () => onUpdate?.(workflowResult(`Workflow "${metaName}" running.`, cloneSnapshot(snapshot)));
 
@@ -167,6 +429,7 @@ export function createWorkflowTool(
           signal,
           limiter: options.limiter,
           runAgent,
+          resumeAgentResults,
           onLog: (message) => {
             snapshot.logs.push(message);
             emit();
@@ -178,27 +441,41 @@ export function createWorkflowTool(
             emit();
           },
           onAgentStart: (event) => {
-            snapshot.agents.push({ label: event.label, phase: event.phase, status: "running" });
+            snapshot.agents.push({ label: event.label, phase: event.phase, status: event.cached ? "done" : "running" });
             snapshot.agentCount = snapshot.agents.length;
+            if (event.cached) {
+              snapshot.cachedAgentCount = (snapshot.cachedAgentCount ?? 0) + 1;
+            }
             emit();
           },
           onAgentEnd: (event) => {
             const agent = [...snapshot.agents]
               .reverse()
-              .find((item) => item.label === event.label && item.status === "running");
+              .find((item) => item.label === event.label && (event.cached || item.status === "running"));
             if (agent) {
               agent.status = event.result === null ? "error" : "done";
             }
             emit();
+          },
+          onAgentResult: async (event) => {
+            await journalWriter?.appendAgentResult(event);
           },
         });
 
         snapshot.status = "completed";
         snapshot.agentCount = runResult.agentCount;
         snapshot.result = runResult.result;
+        try {
+          await journalWriter?.complete(runResult.result);
+        } catch (error) {
+          snapshot.logs.push(`workflow journal completion failed: ${error instanceof Error ? error.message : String(error)}`);
+        }
         const resultText = JSON.stringify(runResult.result, null, 2);
+        const cachedText = snapshot.cachedAgentCount ? ` (${snapshot.cachedAgentCount} cached)` : "";
+        const scriptPathText = snapshot.scriptPath ? `\nscriptPath: ${snapshot.scriptPath}` : "";
+        const runIdText = snapshot.runId ? `\nrunId: ${snapshot.runId}` : "";
         return workflowResult(
-          `Workflow "${runResult.meta.name}" completed with ${runResult.agentCount} agent(s).\n\nResult:\n${resultText}`,
+          `Workflow "${runResult.meta.name}" completed with ${runResult.agentCount} agent(s)${cachedText}.${scriptPathText}${runIdText}\n\nResult:\n${resultText}`,
           cloneSnapshot(snapshot),
         );
       } catch (error) {
@@ -206,6 +483,11 @@ export function createWorkflowTool(
         const aborted = Boolean(signal?.aborted) || isAbortMessage(message);
         snapshot.status = aborted ? "aborted" : "error";
         snapshot.error = message;
+        try {
+          await journalWriter?.fail(message);
+        } catch {
+          // Preserve the original workflow failure; journal write failure is secondary.
+        }
         for (const agent of snapshot.agents) {
           if (agent.status === "running") {
             agent.status = "error";
@@ -217,11 +499,12 @@ export function createWorkflowTool(
         );
       }
     },
-    renderCall(_args, theme, context) {
+    renderCall(args, theme, context) {
       if (context.executionStarted) {
         return new Text("", 0, 0);
       }
-      return new Text(`${theme.bold("Workflow")}`, 0, 0);
+      const name = typeof args.name === "string" && args.name.trim() ? ` ${theme.fg("muted", args.name.trim())}` : "";
+      return new Text(`${theme.bold("Workflow")}${name}`, 0, 0);
     },
     renderResult(result, _options, theme) {
       const details = result.details as WorkflowToolDetails;

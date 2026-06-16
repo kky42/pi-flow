@@ -62,13 +62,22 @@ The explorer returns a concise repo map, and the main agent relays the useful pa
 
 ## Workflows
 
-For fan-out work — codebase audits, multi-perspective review, broad research — ask pi for a *workflow*. The model writes a small deterministic JavaScript script that the `workflow` tool runs, fanning the work across isolated subagents and synthesizing the results.
+For fan-out work — codebase audits, multi-perspective review, broad research — ask pi for a *workflow*. The model can either write a small deterministic JavaScript script inline or reuse a saved workflow from disk. The `workflow` tool runs the script, fans work out across isolated subagents, and synthesizes the results.
 
 ```text
 Run a workflow to audit this repo for TODOs, FIXMEs, and skipped tests, then summarize.
 ```
 
-The script runs in a sandbox with these globals:
+Saved workflows live in:
+
+- `~/.pi/agent/workflows/*.js` for global workflows
+- `.pi/workflows/*.js` for project-local workflows, loaded only when the project is trusted
+
+Each file starts with `export const meta = { name, description }`; put both the summary and “when to use” guidance in `description`. The model sees a compact roster of saved workflow names/descriptions and can call `workflow({ name, args })` when one matches the user's natural-language request. Project workflows override global workflows with the same `meta.name`.
+
+Inline workflow runs are auto-persisted under the current session's workflow directory when the session is persisted. The tool result includes `scriptPath` and `runId`, so an agent can edit that file and rerun with `workflow({ scriptPath, resumeFromRunId })`. Resume reuses cached `agent()` results for the longest unchanged prefix; the first edited/new `agent()` call and everything after it runs live.
+
+The script runs in a restricted VM context (not a security boundary; saved workflows are executable orchestration you should trust) with these globals:
 
 - `agent(prompt, opts)` — spawn one subagent; returns its final text, or a schema-validated object when `opts.schema` is set. `opts`: `label`, `phase`, `subagent_type`, `schema`.
 - `parallel(thunks)` — run independent `() => agent(...)` thunks concurrently; results come back in input order.
@@ -93,9 +102,12 @@ return await agent(`Summarize these findings:\n${findings.join("\n\n")}`, { labe
 
 Key properties:
 
+- **Reusable.** Save deterministic workflow scripts on disk and invoke them by `meta.name`; ad-hoc inline scripts still work and return a session `scriptPath`.
+- **Trust-gated.** Project-local `.pi/workflows` are ignored unless the project is trusted, and saved workflow files are re-parsed and path-checked before execution.
 - **Real subagents.** Each `agent()` runs through the same spawn path as the `Agent` tool, so `subagent_type` gives it that profile's model, thinking level, tools, and system prompt.
 - **Structured output.** Pass a JSON Schema as `opts.schema` and `agent()` returns a validated object instead of text — ideal for composing results in `parallel`/`pipeline`.
 - **Deterministic.** `Date.now()`, `Math.random()`, and `new Date()` are rejected at parse time, so a workflow replays identically given the same agent outputs.
+- **Resumable.** Use the returned `runId` with an edited `scriptPath` to reuse cached subagent outputs for the unchanged prefix of `agent()` calls.
 - **Bounded.** Workflow fan-out shares the same global concurrency cap as the `Agent` tool; excess agents queue and drain as slots free.
 - **Foreground.** A workflow is a single blocking tool call. Subagents cannot launch workflows or other subagents.
 

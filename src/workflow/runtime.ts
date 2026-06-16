@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import vm from "node:vm";
 import { parse, type Node } from "acorn";
 import type { ConcurrencyLimiter } from "../core/concurrency.ts";
@@ -11,7 +12,6 @@ export interface WorkflowMetaPhase {
 export interface WorkflowMeta {
   name: string;
   description: string;
-  whenToUse?: string;
   phases?: WorkflowMetaPhase[];
 }
 
@@ -23,6 +23,21 @@ export interface WorkflowAgentCall {
   subagentType: string;
   /** Reserved for structured output (P4). */
   schema?: unknown;
+}
+
+export interface WorkflowCachedAgentResult {
+  index: number;
+  fingerprint: string;
+  result: unknown;
+}
+
+export interface WorkflowAgentResultEvent extends WorkflowCachedAgentResult {
+  label: string;
+  phase?: string;
+  subagentType: string;
+  prompt: string;
+  schema?: unknown;
+  cached: boolean;
 }
 
 /**
@@ -46,8 +61,10 @@ export interface RunWorkflowOptions {
   defaultSubagentType?: string;
   onLog?: (message: string) => void;
   onPhase?: (title: string) => void;
-  onAgentStart?: (event: { label: string; phase?: string; subagentType: string; prompt: string }) => void;
-  onAgentEnd?: (event: { label: string; phase?: string; result: unknown }) => void;
+  resumeAgentResults?: WorkflowCachedAgentResult[];
+  onAgentStart?: (event: { label: string; phase?: string; subagentType: string; prompt: string; cached?: boolean }) => void;
+  onAgentEnd?: (event: { label: string; phase?: string; result: unknown; cached?: boolean }) => void;
+  onAgentResult?: (event: WorkflowAgentResultEvent) => void | Promise<void>;
 }
 
 export interface WorkflowRunResult<T = unknown> {
@@ -63,6 +80,13 @@ interface RuntimeState {
   logs: string[];
   phases: string[];
   agentCount: number;
+  resumePrefixActive: boolean;
+}
+
+interface AgentObservation {
+  observed: boolean;
+  settled: boolean;
+  promise?: Promise<unknown>;
 }
 
 interface NormalizedAgentOptions {
@@ -76,15 +100,30 @@ type AnyNode = Node & { [key: string]: any; start: number; end: number };
 
 const NONDETERMINISM_ERROR =
   "Workflow scripts must be deterministic: Date.now()/Math.random()/new Date() are unavailable";
+const DYNAMIC_CODE_ERROR =
+  "Workflow scripts cannot use dynamic code generation or constructor escape paths";
 
 const DEFAULT_SUBAGENT_TYPE = "general-purpose";
+
+class WorkflowFatalError extends Error {}
+
+function isWorkflowFatalError(error: unknown): error is WorkflowFatalError {
+  return error instanceof WorkflowFatalError;
+}
 
 export async function runWorkflow<T = unknown>(
   script: string,
   options: RunWorkflowOptions,
 ): Promise<WorkflowRunResult<T>> {
   const { meta, body } = parseWorkflowScript(script);
-  const state: RuntimeState = { logs: [], phases: [], agentCount: 0 };
+  const state: RuntimeState = {
+    logs: [],
+    phases: [],
+    agentCount: 0,
+    resumePrefixActive: Boolean(options.resumeAgentResults?.length),
+  };
+  const resumeAgentResults = options.resumeAgentResults ?? [];
+  const agentObservations: AgentObservation[] = [];
   const limiter = options.limiter;
   const defaultSubagentType = options.defaultSubagentType ?? DEFAULT_SUBAGENT_TYPE;
 
@@ -109,37 +148,82 @@ export async function runWorkflow<T = unknown>(
     options.onPhase?.(text);
   };
 
-  const agent = async (prompt: unknown, agentOptions: unknown = {}) => {
+  const recordAgentResult = async (event: WorkflowAgentResultEvent) => {
+    try {
+      await options.onAgentResult?.(event);
+    } catch (error) {
+      throw new WorkflowFatalError(`workflow agent-result hook failed: ${error instanceof Error ? error.message : String(error)}`);
+    }
+  };
+
+  const runAgentCall = async (prompt: unknown, agentOptions: unknown = {}) => {
     throwIfAborted();
     const taskPrompt = requireString(prompt, "agent prompt");
     const opts = normalizeAgentOptions(agentOptions);
     const assignedPhase = opts.phase ?? state.currentPhase;
     const subagentType = opts.subagentType ?? defaultSubagentType;
 
+    const index = ++state.agentCount;
+    const label = opts.label || defaultAgentLabel(assignedPhase, index);
+    const call = { prompt: taskPrompt, label, phase: assignedPhase, subagentType, schema: opts.schema };
+    const fingerprint = fingerprintWorkflowAgentCall(call);
+    const cachedResult = state.resumePrefixActive ? resumeAgentResults[index - 1] : undefined;
+    if (cachedResult?.index === index && cachedResult.fingerprint === fingerprint) {
+      options.onAgentStart?.({ label, phase: assignedPhase, subagentType, prompt: taskPrompt, cached: true });
+      options.onAgentEnd?.({ label, phase: assignedPhase, result: cachedResult.result, cached: true });
+      await recordAgentResult({ ...call, index, fingerprint, result: cachedResult.result, cached: true });
+      return cachedResult.result;
+    }
+    state.resumePrefixActive = false;
+
     // Queue on the shared global cap. May reject if aborted while waiting.
     const release = await limiter.acquire(options.signal);
-    state.agentCount++;
-    const label = opts.label || defaultAgentLabel(assignedPhase, state.agentCount);
     options.onAgentStart?.({ label, phase: assignedPhase, subagentType, prompt: taskPrompt });
+    let result: unknown;
     try {
       throwIfAborted();
-      const result = await options.runAgent(
-        { prompt: taskPrompt, label, phase: assignedPhase, subagentType, schema: opts.schema },
-        options.signal,
-      );
+      result = await options.runAgent(call, options.signal);
       throwIfAborted();
-      options.onAgentEnd?.({ label, phase: assignedPhase, result });
-      return result;
     } catch (error) {
       if (options.signal?.aborted) {
         throw error;
       }
       log(`agent ${label} failed: ${error instanceof Error ? error.message : String(error)}`);
-      options.onAgentEnd?.({ label, phase: assignedPhase, result: null });
-      return null;
+      result = null;
     } finally {
       release();
     }
+    options.onAgentEnd?.({ label, phase: assignedPhase, result });
+    await recordAgentResult({ ...call, index, fingerprint, result, cached: false });
+    return result;
+  };
+
+  let acceptingAgentCalls = true;
+
+  const agent = (prompt: unknown, agentOptions: unknown = {}) => {
+    if (!acceptingAgentCalls) {
+      throw new Error("agent() cannot be called after the workflow body has returned");
+    }
+    const observation: AgentObservation = { observed: false, settled: false };
+    agentObservations.push(observation);
+    const start = () => {
+      observation.observed = true;
+      if (!acceptingAgentCalls) {
+        return new Promise<never>(() => {});
+      }
+      if (!observation.promise) {
+        observation.promise = runAgentCall(prompt, agentOptions).finally(() => {
+          observation.settled = true;
+        });
+      }
+      return observation.promise;
+    };
+    return {
+      then: (onFulfilled, onRejected) => start().then(onFulfilled, onRejected),
+      catch: (onRejected) => start().catch(onRejected),
+      finally: (onFinally) => start().finally(onFinally),
+      [Symbol.toStringTag]: "Promise",
+    } as Promise<unknown>;
   };
 
   const parallel = async (thunks: Array<() => Promise<unknown>>) => {
@@ -150,19 +234,24 @@ export async function runWorkflow<T = unknown>(
     if (thunks.some((thunk) => typeof thunk !== "function")) {
       throw new TypeError("parallel() expects an array of functions, not promises. Wrap each call: () => agent(...)");
     }
-    return Promise.all(
+    const results = await Promise.all(
       thunks.map(async (thunk, index) => {
         try {
-          return await thunk();
+          return { status: "ok" as const, value: await thunk() };
         } catch (error) {
-          if (options.signal?.aborted) {
-            throw error;
+          if (options.signal?.aborted || isWorkflowFatalError(error)) {
+            return { status: "fatal" as const, error };
           }
           log(`parallel[${index}] failed: ${error instanceof Error ? error.message : String(error)}`);
-          return null;
+          return { status: "ok" as const, value: null };
         }
       }),
     );
+    const fatal = results.find((result) => result.status === "fatal");
+    if (fatal?.status === "fatal") {
+      throw fatal.error;
+    }
+    return results.map((result) => (result.status === "ok" ? result.value : null));
   };
 
   const pipeline = async (
@@ -176,7 +265,7 @@ export async function runWorkflow<T = unknown>(
     if (stages.some((stage) => typeof stage !== "function")) {
       throw new TypeError("pipeline() stages must be functions: pipeline(items, item => ..., result => ...)");
     }
-    return Promise.all(
+    const results = await Promise.all(
       items.map(async (item, index) => {
         let value: unknown = item;
         for (const stage of stages) {
@@ -185,47 +274,92 @@ export async function runWorkflow<T = unknown>(
             value = await stage(value, item, index);
             throwIfAborted();
           } catch (error) {
-            if (options.signal?.aborted) {
-              throw error;
+            if (options.signal?.aborted || isWorkflowFatalError(error)) {
+              return { status: "fatal" as const, error };
             }
             log(`pipeline[${index}] failed: ${error instanceof Error ? error.message : String(error)}`);
-            return null;
+            return { status: "ok" as const, value: null };
           }
         }
-        return value;
+        return { status: "ok" as const, value };
       }),
     );
+    const fatal = results.find((result) => result.status === "fatal");
+    if (fatal?.status === "fatal") {
+      throw fatal.error;
+    }
+    return results.map((result) => (result.status === "ok" ? result.value : null));
   };
 
-  const context = vm.createContext({
-    agent,
-    parallel,
-    pipeline,
-    log,
-    phase,
-    args: options.args,
-    cwd: options.cwd,
-    process: Object.freeze({ cwd: () => options.cwd }),
-    console: {
+  const context = vm.createContext(
+    {
+      agent,
+      parallel,
+      pipeline,
       log,
-      info: log,
-      warn: (m: unknown) => log(`[warn] ${String(m)}`),
-      error: (m: unknown) => log(`[error] ${String(m)}`),
+      phase,
+      args: options.args,
+      cwd: options.cwd,
+      process: Object.freeze({ cwd: () => options.cwd }),
+      console: {
+        log,
+        info: log,
+        warn: (m: unknown) => log(`[warn] ${String(m)}`),
+        error: (m: unknown) => log(`[error] ${String(m)}`),
+      },
+      JSON,
+      Math,
+      Array,
+      Object,
+      String,
+      Number,
+      Boolean,
+      Set,
+      Map,
+      Promise,
+      Reflect: undefined,
+      Function: undefined,
+      Date: undefined,
+      Atomics: undefined,
+      SharedArrayBuffer: undefined,
+      eval: undefined,
+      globalThis: undefined,
     },
-    JSON,
-    Math,
-    Array,
-    Object,
-    String,
-    Number,
-    Boolean,
-    Set,
-    Map,
-    Promise,
-  });
+    { codeGeneration: { strings: false, wasm: false } },
+  );
 
   const wrapped = `(async () => {\n${body}\n})()`;
-  const result = await new vm.Script(wrapped, { filename: `${meta.name || "workflow"}.js` }).runInContext(context);
+  let result: unknown;
+  try {
+    result = await new vm.Script(wrapped, { filename: `${meta.name || "workflow"}.js` }).runInContext(context, {
+      timeout: 1000,
+    });
+  } catch (error) {
+    acceptingAgentCalls = false;
+    throw error;
+  }
+  if (agentObservations.some((observation) => !observation.observed)) {
+    acceptingAgentCalls = false;
+    throw new Error("every agent() call must be awaited or returned");
+  }
+  let drainedStartedAgents = false;
+  while (true) {
+    const pendingAgents = agentObservations
+      .filter((observation) => observation.observed && !observation.settled && observation.promise)
+      .map((observation) => observation.promise as Promise<unknown>);
+    if (!pendingAgents.length) {
+      break;
+    }
+    drainedStartedAgents = true;
+    await Promise.allSettled(pendingAgents);
+  }
+  acceptingAgentCalls = false;
+  if (drainedStartedAgents) {
+    throw new Error("every started agent() call must be awaited before the workflow returns");
+  }
+  if (state.agentCount === 0) {
+    throw new Error("workflow must call agent() at least once");
+  }
   assertStructuredCloneable(result, "workflow result");
 
   return {
@@ -328,6 +462,9 @@ function assertDeterministicAst(node: AnyNode): void {
   if (isDateNowCall(node) || isMathRandomCall(node) || isNewDateExpression(node)) {
     throw new Error(NONDETERMINISM_ERROR);
   }
+  if (isDynamicCodePath(node)) {
+    throw new Error(DYNAMIC_CODE_ERROR);
+  }
   for (const child of astChildren(node)) {
     assertDeterministicAst(child);
   }
@@ -361,11 +498,83 @@ function isNewDateExpression(node: AnyNode): boolean {
   return node.type === "NewExpression" && node.callee?.type === "Identifier" && node.callee.name === "Date";
 }
 
+function isDynamicCodePath(node: AnyNode): boolean {
+  if (node.type === "ImportExpression" || node.type === "ThisExpression") return true;
+  if (node.type === "Identifier" && isUnsafeIdentifier(node.name)) return true;
+  if (node.type === "Property") {
+    if (node.computed) return true;
+    if (isUnsafePropertyName(propertyKeyName(node.key as AnyNode))) return true;
+  }
+  if (node.type === "CallExpression" && node.callee?.type === "Identifier" && node.callee.name === "eval") return true;
+  if (
+    (node.type === "CallExpression" || node.type === "NewExpression") &&
+    node.callee?.type === "Identifier" &&
+    node.callee.name === "Function"
+  ) {
+    return true;
+  }
+  if (node.type !== "MemberExpression") {
+    return false;
+  }
+  const propertyName = propertyNameOf(node);
+  if (isUnsafePropertyName(propertyName)) {
+    return true;
+  }
+  if (node.object?.type === "Identifier" && node.object.name === "Object" && isUnsafeObjectReflection(propertyName)) {
+    return true;
+  }
+  return node.computed && !isNumericLiteral(node.property);
+}
+
 function isMemberExpression(node: AnyNode | undefined, objectName: string, propertyName: string): boolean {
   if (node?.type !== "MemberExpression" || node.object?.type !== "Identifier" || node.object.name !== objectName) {
     return false;
   }
   return propertyNameOf(node) === propertyName;
+}
+
+function isUnsafeIdentifier(name: string): boolean {
+  return (
+    name === "globalThis" ||
+    name === "Reflect" ||
+    name === "Function" ||
+    name === "eval" ||
+    name === "Date" ||
+    name === "Atomics" ||
+    name === "SharedArrayBuffer"
+  );
+}
+
+function isUnsafePropertyName(propertyName: string | undefined): boolean {
+  return (
+    propertyName === "constructor" ||
+    propertyName === "prototype" ||
+    propertyName === "__proto__" ||
+    propertyName === "__lookupGetter__" ||
+    propertyName === "__lookupSetter__" ||
+    isUnsafeObjectReflection(propertyName)
+  );
+}
+
+function isUnsafeObjectReflection(propertyName: string | undefined): boolean {
+  return (
+    propertyName === "getPrototypeOf" ||
+    propertyName === "getOwnPropertyDescriptor" ||
+    propertyName === "getOwnPropertyDescriptors" ||
+    propertyName === "setPrototypeOf" ||
+    propertyName === "defineProperty" ||
+    propertyName === "defineProperties" ||
+    propertyName === "create"
+  );
+}
+
+function isNumericLiteral(node: AnyNode | undefined): boolean {
+  return node?.type === "Literal" && typeof node.value === "number";
+}
+
+function propertyKeyName(node: AnyNode | undefined): string | undefined {
+  if (node?.type === "Identifier") return node.name;
+  return staticStringOf(node);
 }
 
 function propertyNameOf(node: AnyNode): string | undefined {
@@ -388,9 +597,6 @@ function validateMeta(meta: unknown): asserts meta is WorkflowMeta {
   if (typeof value.description !== "string" || !value.description.trim()) {
     throw new Error("meta.description must be a non-empty string");
   }
-  if (value.whenToUse !== undefined && typeof value.whenToUse !== "string") {
-    throw new Error("meta.whenToUse must be a string");
-  }
   if (value.phases !== undefined) {
     if (!Array.isArray(value.phases)) throw new Error("meta.phases must be an array");
     for (const phase of value.phases) {
@@ -398,6 +604,45 @@ function validateMeta(meta: unknown): asserts meta is WorkflowMeta {
         throw new Error("each meta phase must have a title string");
       }
     }
+  }
+}
+
+export function fingerprintWorkflowAgentCall(call: WorkflowAgentCall): string {
+  return hashStableValue({
+    prompt: call.prompt,
+    label: call.label,
+    phase: call.phase,
+    subagentType: call.subagentType,
+    schema: call.schema,
+  });
+}
+
+export function hashStableValue(value: unknown): string {
+  return createHash("sha256").update(stableStringify(value)).digest("hex");
+}
+
+function stableStringify(value: unknown): string {
+  return JSON.stringify(normalizeForStableStringify(value));
+}
+
+function normalizeForStableStringify(value: unknown, seen = new WeakSet<object>()): unknown {
+  if (value === undefined) return { $type: "undefined" };
+  if (typeof value === "bigint") return { $type: "bigint", value: value.toString() };
+  if (typeof value === "function") return { $type: "function" };
+  if (!value || typeof value !== "object") return value;
+  if (seen.has(value)) return { $type: "circular" };
+  seen.add(value);
+  try {
+    if (Array.isArray(value)) {
+      return value.map((item) => normalizeForStableStringify(item, seen));
+    }
+    const out: Record<string, unknown> = {};
+    for (const key of Object.keys(value as Record<string, unknown>).sort()) {
+      out[key] = normalizeForStableStringify((value as Record<string, unknown>)[key], seen);
+    }
+    return out;
+  } finally {
+    seen.delete(value);
   }
 }
 

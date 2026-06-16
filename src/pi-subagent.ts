@@ -22,6 +22,7 @@ import { filterProfilesForModelRegistry, resolveProfileModel } from "./core/mode
 import { spawnSubagent } from "./core/spawn.ts";
 import { textResult } from "./core/progress.ts";
 import { createWorkflowTool } from "./workflow/tool.ts";
+import { listSavedWorkflows } from "./workflow/registry.ts";
 import type {
   SubagentExtensionOptions,
   SubagentProfile,
@@ -32,6 +33,14 @@ import type {
 } from "./types.ts";
 
 const DEFAULT_MAX_CONCURRENCY = 12;
+
+function isProjectTrusted(ctx: ExtensionContext): boolean {
+  try {
+    return ctx.isProjectTrusted();
+  } catch {
+    return false;
+  }
+}
 
 const agentToolParameters = Type.Object({
   description: Type.String({
@@ -430,7 +439,7 @@ export function createSubagentExtension(options: SubagentExtensionOptions = {}):
       }
     });
 
-    pi.on("before_agent_start", (event) => {
+    pi.on("before_agent_start", (event, ctx) => {
       const tools = pi.getAllTools();
       if (!tools.some((tool) => tool.name === "Agent")) {
         return;
@@ -445,7 +454,12 @@ export function createSubagentExtension(options: SubagentExtensionOptions = {}):
       );
       const sections = [event.systemPrompt, buildCoordinatorPrompt(profiles)];
       if (workflowEnabled && tools.some((tool) => tool.name === "workflow")) {
-        sections.push(buildWorkflowPrompt(profiles));
+        const savedWorkflows = listSavedWorkflows({
+          agentDir: getAgentDir(),
+          cwd: ctx.cwd,
+          projectTrusted: isProjectTrusted(ctx),
+        });
+        sections.push(buildWorkflowPrompt(profiles, savedWorkflows));
       }
       return { systemPrompt: sections.join("\n\n") };
     });

@@ -1,3 +1,6 @@
+import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { Theme } from "@earendil-works/pi-coding-agent";
 import { describe, expect, it } from "vitest";
 import { ConcurrencyLimiter } from "../src/core/concurrency.ts";
@@ -8,6 +11,7 @@ import {
   runWorkflow,
   type WorkflowAgentRunner,
 } from "../src/workflow/runtime.ts";
+import { loadSavedWorkflowRegistry } from "../src/workflow/registry.ts";
 import { createWorkflowTool } from "../src/workflow/tool.ts";
 
 const META = "export const meta = { name: 'wf', description: 'a workflow' };\n";
@@ -52,6 +56,8 @@ describe("parseWorkflowScript", () => {
     expect(() => parseWorkflowScript(`${META}const t = Date.now();`)).toThrow(/deterministic/);
     expect(() => parseWorkflowScript(`${META}const r = Math.random();`)).toThrow(/deterministic/);
     expect(() => parseWorkflowScript(`${META}const d = new Date();`)).toThrow(/deterministic/);
+    expect(() => parseWorkflowScript(`${META}const now = Date.now; now();`)).toThrow(/dynamic code|Date/i);
+    expect(() => parseWorkflowScript(`${META}const D = Date; new D();`)).toThrow(/dynamic code|Date/i);
   });
 
   it("rejects non-literal meta", () => {
@@ -72,6 +78,91 @@ describe("runWorkflow", () => {
     expect(result.meta.name).toBe("wf");
     expect(result.agentCount).toBe(1);
   });
+
+  it("requires at least one agent call", async () => {
+    await expect(
+      runWorkflow(`${META}return 'no agents';`, {
+        cwd: "/tmp",
+        limiter: new ConcurrencyLimiter(4),
+        runAgent: echo,
+      }),
+    ).rejects.toThrow(/must call agent/i);
+  });
+
+  it("blocks dynamic code generation escape attempts inside the workflow vm", async () => {
+    await expect(
+      runWorkflow(`${META}log.constructor.constructor('return process')();\nreturn await agent('x');`, {
+        cwd: "/tmp",
+        limiter: new ConcurrencyLimiter(4),
+        runAgent: echo,
+      }),
+    ).rejects.toThrow(/dynamic code|constructor/i);
+    await expect(
+      runWorkflow(
+        `${META}Object.getOwnPropertyDescriptor(Object.getPrototypeOf(log), 'constructor').value('return process')();\nreturn await agent('x');`,
+        {
+          cwd: "/tmp",
+          limiter: new ConcurrencyLimiter(4),
+          runAgent: echo,
+        },
+      ),
+    ).rejects.toThrow(/dynamic code|constructor/i);
+    await expect(
+      runWorkflow(
+        `${META}const { constructor: Obj } = globalThis;\nconst { constructor: F } = Obj;\nF('return process')();\nreturn await agent('x');`,
+        {
+          cwd: "/tmp",
+          limiter: new ConcurrencyLimiter(4),
+          runAgent: echo,
+        },
+      ),
+    ).rejects.toThrow(/dynamic code|constructor/i);
+    await expect(
+      runWorkflow(
+        `${META}const { getOwnPropertyDescriptor: gopd, getPrototypeOf: gp } = Object;\ngopd(gp(log), 'constructor').value('return process')();\nreturn await agent('x');`,
+        {
+          cwd: "/tmp",
+          limiter: new ConcurrencyLimiter(4),
+          runAgent: echo,
+        },
+      ),
+    ).rejects.toThrow(/dynamic code|constructor/i);
+  });
+
+  it("waits for started but unawaited agent calls before failing", async () => {
+    let completed = false;
+    await expect(
+      runWorkflow(`${META}agent('slow', { label: 'late' }).then(() => log('late done'));\nreturn 'early';`, {
+        cwd: "/tmp",
+        limiter: new ConcurrencyLimiter(4),
+        runAgent: async () => {
+          await delay(5);
+          completed = true;
+          return "late";
+        },
+      }),
+    ).rejects.toThrow(/awaited before the workflow returns/);
+    expect(completed).toBe(true);
+  });
+
+  it("does not allow promise reactions to start new agents after return", async () => {
+    const completed: string[] = [];
+    await expect(
+      runWorkflow(
+        `${META}agent('a', { label: 'a' }).then(() => agent('b', { label: 'b' }).then(() => log('b done')));\nreturn 'early';`,
+        {
+          cwd: "/tmp",
+          limiter: new ConcurrencyLimiter(4),
+          runAgent: async (call) => {
+            completed.push(call.label);
+            return call.label;
+          },
+        },
+      ),
+    ).rejects.toThrow(/awaited before the workflow returns/);
+    expect(completed).toEqual(["a", "b"]);
+  });
+
 
   it("defaults subagent_type to general-purpose and passes an explicit type through", async () => {
     const seen: string[] = [];
@@ -174,14 +265,73 @@ describe("runWorkflow", () => {
     ).rejects.toThrow(/abort/i);
   });
 
-  it("requires the result to be structured-cloneable (catches a forgotten await)", async () => {
+  it("requires every agent call to be awaited or returned", async () => {
     await expect(
       runWorkflow(`${META}return { pending: agent('x', { label: 'a' }) };`, {
         cwd: "/tmp",
         limiter: new ConcurrencyLimiter(1),
         runAgent: echo,
       }),
-    ).rejects.toThrow(/structured-cloneable/);
+    ).rejects.toThrow(/awaited or returned/);
+  });
+
+  it("waits for parallel siblings before surfacing fatal agent-result hook errors", async () => {
+    let completed = 0;
+    await expect(
+      runWorkflow(`${META}return await parallel([\n() => agent('fast', { label: 'fast' }),\n() => agent('slow', { label: 'slow' })\n]);`, {
+        cwd: "/tmp",
+        limiter: new ConcurrencyLimiter(4),
+        runAgent: async (call) => {
+          if (call.label === "slow") await delay(5);
+          completed++;
+          return call.label;
+        },
+        onAgentResult: (event) => {
+          if (event.label === "fast") {
+            throw new Error("journal full");
+          }
+        },
+      }),
+    ).rejects.toThrow(/agent-result hook failed/);
+    expect(completed).toBe(2);
+  });
+
+  it("reuses cached agent results for the longest unchanged prefix on resume", async () => {
+    const firstRunEvents: any[] = [];
+    const firstRun = await runWorkflow(
+      `${META}const a = await agent('first', { label: 'one' });\nconst b = await agent('second', { label: 'two' });\nreturn [a, b];`,
+      {
+        cwd: "/tmp",
+        limiter: new ConcurrencyLimiter(4),
+        runAgent: async (call) => `${call.prompt}:live1`,
+        onAgentResult: (event) => {
+          firstRunEvents.push(event);
+        },
+      },
+    );
+    expect(firstRun.result).toEqual(["first:live1", "second:live1"]);
+
+    const secondRunEvents: any[] = [];
+    const livePrompts: string[] = [];
+    const secondRun = await runWorkflow(
+      `${META}const a = await agent('first', { label: 'one' });\nconst b = await agent('second changed', { label: 'two' });\nreturn [a, b];`,
+      {
+        cwd: "/tmp",
+        limiter: new ConcurrencyLimiter(4),
+        runAgent: async (call) => {
+          livePrompts.push(call.prompt);
+          return `${call.prompt}:live2`;
+        },
+        resumeAgentResults: firstRunEvents.map(({ index, fingerprint, result }) => ({ index, fingerprint, result })),
+        onAgentResult: (event) => {
+          secondRunEvents.push(event);
+        },
+      },
+    );
+
+    expect(secondRun.result).toEqual(["first:live1", "second changed:live2"]);
+    expect(livePrompts).toEqual(["second changed"]);
+    expect(secondRunEvents.map((event) => event.cached)).toEqual([true, false]);
   });
 
   it("emits phase, agent start/end, and failure-log progress events in order", async () => {
@@ -212,6 +362,69 @@ describe("runWorkflow", () => {
     expect(events).toContain("log");
     expect(events.indexOf("phase:scan")).toBeLessThan(events.indexOf("start:ok"));
     expect(events.indexOf("start:ok")).toBeLessThan(events.indexOf("end:ok:ok"));
+  });
+});
+
+describe("saved workflow registry", () => {
+  function withTempDir<T>(fn: (dir: string) => T): T {
+    const dir = mkdtempSync(join(tmpdir(), "pi-subagent-workflows-"));
+    try {
+      return fn(dir);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  }
+
+  function workflowScript(name: string, description = "saved workflow"): string {
+    return `export const meta = { name: '${name}', description: '${description}' };\nreturn await agent('hello');`;
+  }
+
+  it("loads global saved workflows from the agent dir", () => {
+    withTempDir((dir) => {
+      const agentDir = join(dir, "agent");
+      mkdirSync(join(agentDir, "workflows"), { recursive: true });
+      writeFileSync(join(agentDir, "workflows", "audit.js"), workflowScript("audit-todos", "Audit TODOs"));
+
+      const registry = loadSavedWorkflowRegistry({ agentDir, cwd: join(dir, "project"), projectTrusted: false });
+
+      expect([...registry.workflows.keys()]).toEqual(["audit-todos"]);
+      expect(registry.workflows.get("audit-todos")?.description).toBe("Audit TODOs");
+    });
+  });
+
+  it("loads project workflows only when the project is trusted and lets project override global", () => {
+    withTempDir((dir) => {
+      const agentDir = join(dir, "agent");
+      const cwd = join(dir, "project");
+      mkdirSync(join(agentDir, "workflows"), { recursive: true });
+      mkdirSync(join(cwd, ".pi", "workflows"), { recursive: true });
+      writeFileSync(join(agentDir, "workflows", "review.js"), workflowScript("review", "Global review"));
+      writeFileSync(join(cwd, ".pi", "workflows", "review.js"), workflowScript("review", "Project review"));
+
+      const untrusted = loadSavedWorkflowRegistry({ agentDir, cwd, projectTrusted: false });
+      expect(untrusted.workflows.get("review")?.description).toBe("Global review");
+
+      const trusted = loadSavedWorkflowRegistry({ agentDir, cwd, projectTrusted: true });
+      expect(trusted.workflows.get("review")?.description).toBe("Project review");
+      expect(trusted.workflows.get("review")?.scope).toBe("project");
+    });
+  });
+
+  it("skips invalid workflows and symlinks escaping the workflow root", () => {
+    withTempDir((dir) => {
+      const agentDir = join(dir, "agent");
+      const workflowsDir = join(agentDir, "workflows");
+      mkdirSync(workflowsDir, { recursive: true });
+      writeFileSync(join(workflowsDir, "bad-meta.js"), "export const meta = buildMeta();\n");
+      writeFileSync(join(dir, "outside.js"), workflowScript("outside"));
+      symlinkSync(join(dir, "outside.js"), join(workflowsDir, "escape.js"));
+
+      const registry = loadSavedWorkflowRegistry({ agentDir, cwd: join(dir, "project"), projectTrusted: false });
+
+      expect([...registry.workflows.keys()]).toEqual([]);
+      expect(registry.warnings.some((warning) => warning.includes("bad-meta"))).toBe(true);
+      expect(registry.warnings.some((warning) => warning.includes("outside") || warning.includes("escape"))).toBe(true);
+    });
   });
 });
 

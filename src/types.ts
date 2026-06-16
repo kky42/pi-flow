@@ -38,6 +38,13 @@ export interface WorkflowToolDetails {
   phases: string[];
   agents: WorkflowAgentSnapshot[];
   logs: string[];
+  source?: "inline" | "saved" | "path";
+  sourcePath?: string;
+  scriptPath?: string;
+  runId?: string;
+  journalPath?: string;
+  resumeFromRunId?: string;
+  cachedAgentCount?: number;
   result?: unknown;
   error?: string;
 }
