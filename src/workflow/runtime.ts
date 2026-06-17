@@ -315,12 +315,18 @@ export async function runWorkflow<T = unknown>(
       Set,
       Map,
       Promise,
-      Reflect: undefined,
-      Function: undefined,
+      // Determinism defenses, NOT an escape sandbox (the vm is not a security
+      // boundary). Each entry closes a path a script could use to reach the wall
+      // clock or RNG behind the AST scan's back: `Date` directly; eval/Function +
+      // codeGeneration to run code the scan never saw; and globalThis/Reflect as
+      // backdoors (globalThis.Math.random(), Reflect.get(Math, "random")()).
+      // Atomics/SharedArrayBuffer are intentionally NOT nulled — they are no
+      // determinism vector here (no Workers, so no shared-memory races), so
+      // nulling them was only escape hardening for a boundary that does not exist.
       Date: undefined,
-      Atomics: undefined,
-      SharedArrayBuffer: undefined,
       eval: undefined,
+      Function: undefined,
+      Reflect: undefined,
       globalThis: undefined,
     },
     { codeGeneration: { strings: false, wasm: false } },
