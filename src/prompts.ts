@@ -19,16 +19,16 @@ export const AGENT_PROMPT_GUIDELINES = [
 ];
 
 export const WORKFLOW_PROMPT_SNIPPET =
-  "Run a saved or ad-hoc deterministic JavaScript workflow that fans subagents out and synthesizes their results, when the user asks for a workflow or multi-agent orchestration.";
+  "Run a saved or ad-hoc trusted JavaScript workflow that fans subagents out and synthesizes their results, when the user asks for a workflow or multi-agent orchestration.";
 
 export const WORKFLOW_PROMPT_GUIDELINES = [
   "Use workflow only when the user explicitly asks for a workflow, fan-out, or multi-agent orchestration, when a saved workflow matches the user's request, or when a task decomposes into many independent subagent runs that you then synthesize.",
   "Prefer `workflow({ name, args })` when an available saved workflow matches the request. Use `workflow({ scriptPath, resumeFromRunId, args })` to rerun or resume an edited persisted script. Use inline `script` only for ad-hoc orchestration.",
-  "If the user asks to save a reusable workflow, copy or write a `.js` file directly to `~/.pi/agent/workflows/` for global scope or `.pi/workflows/` for project scope. The file must start with `export const meta = { name, description }`; use a filename that exactly matches the workflow name. After saving, invoke it with `workflow({ name, args })`.",
+  "If the user asks to save a reusable workflow, copy or write a `.js` file directly to `~/.pi/agent/workflows/` for global scope or `.pi/workflows/` for project scope. Project workflows are ignored unless the project is trusted. The file must start with `export const meta = { name, description }`; use a filename that exactly matches the workflow name. After saving, invoke it with `workflow({ name, args })`.",
   "For inline scripts, pass one raw JavaScript string in the `script` parameter. No Markdown fences, no prose around it. Inline runs return `scriptPath` and `runId` for later editing/resume.",
   "The script's first statement must be `export const meta = { name: 'short_name', description: 'non-empty description' }`. meta must be a plain literal.",
-  "Available globals: agent(prompt, opts), parallel(thunks), pipeline(items, ...stages), phase(title), log(message), args, cwd. Every workflow must call agent() at least once.",
-  "Write plain JavaScript only. Do not use TypeScript syntax, import/require, fs, or Date.now()/Math.random()/new Date() (workflows must be deterministic).",
+  "Available globals: agent(prompt, opts), parallel(thunks), pipeline(items, ...stages), phase(title), log(message), args, cwd. Every workflow must call agent() at least once and return a JSON-serializable value (use null if there is no synthesized result). Results are canonicalized to JSON; non-plain objects are rejected.",
+  "Write plain JavaScript only. Do not use TypeScript syntax, import/require, fs, or Date.now()/Math.random()/new Date(). Scripts are trusted code; the determinism check is a cooperative lint, not a sandbox.",
   "parallel() takes functions, not promises: `await parallel(items.map(item => () => agent('...', { label: '...' })))`. Results come back in input order.",
   "pipeline(items, ...stages) runs each item through the stages in order while different items run concurrently; each stage receives (previousValue, originalItem, index). Prefer pipeline() for multi-stage work — there is no barrier between stages. Reach for parallel() only when you genuinely need all results together, e.g. dedup or a zero-count early exit.",
   "Give each agent() a unique short `label` and pick a `subagent_type` (defaults to general-purpose) so it inherits that profile's real model, thinking level, tools, and system prompt.",
@@ -62,7 +62,7 @@ function formatSavedWorkflows(workflows: SavedWorkflow[], maxItems = 20): string
 export function buildWorkflowPrompt(profiles: Map<string, SubagentProfile>, savedWorkflows: SavedWorkflow[] = []): string {
   return `# Dynamic Workflows
 
-The \`workflow\` tool runs a saved or ad-hoc deterministic JavaScript script that orchestrates many subagents and synthesizes their results. Reach for it when the user asks for a workflow or fan-out, when a saved workflow matches the request, or when a task splits into many independent subagent runs.
+The \`workflow\` tool runs a saved or ad-hoc trusted JavaScript script that orchestrates many subagents and synthesizes their results. Reach for it when the user asks for a workflow or fan-out, when a saved workflow matches the request, or when a task splits into many independent subagent runs.
 
 Tool input:
 - Use \`{ name: 'saved-workflow-name', args }\` for a saved workflow listed below.
@@ -71,8 +71,8 @@ Tool input:
 
 Inline script contract:
 - First statement: \`export const meta = { name: 'short_name', description: 'non-empty' }\` (a plain literal; \`phases\` optional).
-- Globals: agent(prompt, opts), parallel(thunks), pipeline(items, ...stages), phase(title), log(message), args, cwd. Call agent() at least once.
-- Plain JavaScript only; no imports, no Date.now()/Math.random()/new Date() (scripts must be deterministic).
+- Globals: agent(prompt, opts), parallel(thunks), pipeline(items, ...stages), phase(title), log(message), args, cwd. Call agent() at least once and return a JSON-serializable value (use \`null\` if there is no synthesized result). Results are canonicalized to JSON; non-plain objects are rejected.
+- Plain JavaScript only; no imports, no Date.now()/Math.random()/new Date(). Scripts are trusted code; the determinism check is cooperative lint, not a sandbox.
 - parallel() takes thunks: \`await parallel(items.map(i => () => agent('...', { label: '...' })))\`. pipeline(items, ...stages) pipelines each item through stages while items run concurrently — prefer it for multi-stage work (no barrier between stages); use parallel() only when you need all results together.
 
 Each agent() spawns a fresh subagent. Set \`subagent_type\` to inherit a profile's model, thinking, tools, and system prompt:

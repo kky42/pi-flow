@@ -10,7 +10,7 @@ import { Container, Text } from "@earendil-works/pi-tui";
 import { Type, type Static } from "typebox";
 import type { ConcurrencyLimiter } from "../core/concurrency.ts";
 import { filterProfilesForModelRegistry, resolveProfileModel } from "../core/model.ts";
-import { spawnSubagent } from "../core/spawn.ts";
+import { CHILD_EXCLUDED_TOOLS, spawnSubagent } from "../core/spawn.ts";
 import { getSubagentProfiles } from "../profiles.ts";
 import { WORKFLOW_PROMPT_GUIDELINES, WORKFLOW_PROMPT_SNIPPET } from "../prompts.ts";
 import type { SubagentUsage, WorkflowAgentSnapshot, WorkflowToolDetails } from "../types.ts";
@@ -24,6 +24,7 @@ import {
 } from "./journal.ts";
 import { loadSavedWorkflowRegistry, loadWorkflowScriptPath } from "./registry.ts";
 import {
+  isWorkflowAbortError,
   parseWorkflowScript,
   runWorkflow,
   type WorkflowAgentRunner,
@@ -42,7 +43,7 @@ const workflowToolParameters = Type.Object({
       description: [
         "Raw JavaScript workflow script (no Markdown fences) for an ad-hoc workflow.",
         "First statement: export const meta = { name: 'short_name', description: 'non-empty' }.",
-        "Use agent(prompt, opts), parallel(thunks), pipeline(items, ...stages), phase(title), log(message), args, cwd. Must call agent() at least once.",
+        "Use agent(prompt, opts), parallel(thunks), pipeline(items, ...stages), phase(title), log(message), args, cwd. Must call agent() at least once and return a JSON-serializable value. Results are canonicalized to JSON; non-plain objects are rejected.",
         "Provide exactly one of `script`, `name`, or `scriptPath`."
       ].join(" "),
     }),
@@ -85,6 +86,21 @@ function workflowResult(text: string, details: WorkflowToolDetails) {
   };
 }
 
+/** Build an early-return error result, filling the fixed error-snapshot fields. */
+function workflowError(
+  text: string,
+  details: Partial<WorkflowToolDetails> & { name: string; error: string },
+) {
+  return workflowResult(text, {
+    status: "error",
+    agentCount: 0,
+    phases: [],
+    agents: [],
+    logs: [],
+    ...details,
+  });
+}
+
 function cloneSnapshot(snapshot: WorkflowToolDetails): WorkflowToolDetails {
   return {
     ...snapshot,
@@ -92,10 +108,6 @@ function cloneSnapshot(snapshot: WorkflowToolDetails): WorkflowToolDetails {
     agents: snapshot.agents.map((agent) => ({ ...agent })),
     logs: [...snapshot.logs],
   };
-}
-
-function isAbortMessage(message: string): boolean {
-  return /\babort(?:ed)?\b/i.test(message);
 }
 
 function isProjectTrusted(ctx: ExtensionContext): boolean {
@@ -108,6 +120,23 @@ function isProjectTrusted(ctx: ExtensionContext): boolean {
 
 function formatAvailableWorkflowNames(names: string[]): string {
   return names.length ? names.join(", ") : "none";
+}
+
+function formatWarnings(warnings: string[]): string {
+  if (!warnings.length) {
+    return "";
+  }
+  return `\n\nWarnings:\n${warnings.map((warning) => `- ${warning}`).join("\n")}`;
+}
+
+function formatRecentLogs(logs: string[], max = 10): string {
+  if (!logs.length) {
+    return "";
+  }
+  const shown = logs.slice(-max);
+  const hidden = logs.length - shown.length;
+  const prefix = hidden > 0 ? `- ... ${hidden} earlier log(s)\n` : "";
+  return `\n\nLogs:\n${prefix}${shown.map((log) => `- ${log}`).join("\n")}`;
 }
 
 type WorkflowSource =
@@ -192,21 +221,17 @@ export function createWorkflowTool(
     name: "workflow",
     label: "Workflow",
     description:
-      "Run a saved, session-persisted, or ad-hoc deterministic JavaScript workflow that orchestrates multiple subagents with agent(), parallel(), and pipeline(), then synthesizes their results. Provide exactly one of `name` (saved workflow), `scriptPath` (persisted script), or `script` (raw JavaScript starting with `export const meta = { name, description }`). Use `resumeFromRunId` with `scriptPath` to reuse cached agent results for the longest unchanged prefix. Every workflow must call agent() at least once.",
+      "Run a saved, session-persisted, or ad-hoc trusted JavaScript workflow that orchestrates multiple subagents with agent(), parallel(), and pipeline(), then synthesizes their results. Provide exactly one of `name` (saved workflow), `scriptPath` (persisted script), or `script` (raw JavaScript starting with `export const meta = { name, description }`). Use `resumeFromRunId` with `scriptPath` to reuse cached agent results for the longest unchanged prefix. Every workflow must call agent() at least once.",
     promptSnippet: WORKFLOW_PROMPT_SNIPPET,
     promptGuidelines: WORKFLOW_PROMPT_GUIDELINES,
     parameters: workflowToolParameters,
     async execute(toolCallId, params, signal, onUpdate, ctx) {
       const source = resolveWorkflowSource(params, ctx);
       if (!source.ok) {
-        return workflowResult(source.message, {
+        return workflowError(`${source.message}${formatWarnings(source.warnings)}`, {
           name: "workflow",
-          status: "error",
-          agentCount: 0,
-          phases: [],
-          agents: [],
-          logs: source.warnings,
           error: source.message,
+          logs: source.warnings,
         });
       }
 
@@ -218,17 +243,13 @@ export function createWorkflowTool(
         metaName = parseWorkflowScript(script).meta.name;
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
-        return workflowResult(`Workflow script is invalid: ${message}`, {
+        return workflowError(`Workflow script is invalid: ${message}`, {
           name: metaName,
-          status: "error",
-          agentCount: 0,
-          phases: [],
-          agents: [],
+          error: message,
           logs: source.warnings,
           source: source.source,
           sourcePath: source.sourcePath,
           scriptPath: source.sourcePath,
-          error: message,
         });
       }
 
@@ -245,17 +266,13 @@ export function createWorkflowTool(
           });
         } catch (error) {
           const message = `Workflow persistence failed: ${error instanceof Error ? error.message : String(error)}`;
-          return workflowResult(message, {
+          return workflowError(message, {
             name: metaName,
-            status: "error",
-            agentCount: 0,
-            phases: [],
-            agents: [],
+            error: message,
             logs: source.warnings,
             source: source.source,
             sourcePath: source.sourcePath,
             runId: identity.runId,
-            error: message,
           });
         }
       }
@@ -264,19 +281,15 @@ export function createWorkflowTool(
       if (params.resumeFromRunId) {
         if (!sessionWorkflowDir) {
           const message = "Cannot resume workflow: current session has no persisted workflow state.";
-          return workflowResult(message, {
+          return workflowError(message, {
             name: metaName,
-            status: "error",
-            agentCount: 0,
-            phases: [],
-            agents: [],
+            error: message,
             logs: source.warnings,
             source: source.source,
             sourcePath: source.sourcePath,
             scriptPath,
             runId: identity.runId,
             resumeFromRunId: params.resumeFromRunId,
-            error: message,
           });
         }
         let journal;
@@ -284,36 +297,28 @@ export function createWorkflowTool(
           journal = await loadWorkflowJournal(sessionWorkflowDir, params.resumeFromRunId);
         } catch (error) {
           const message = `Cannot resume workflow: ${error instanceof Error ? error.message : String(error)}`;
-          return workflowResult(message, {
+          return workflowError(message, {
             name: metaName,
-            status: "error",
-            agentCount: 0,
-            phases: [],
-            agents: [],
+            error: message,
             logs: source.warnings,
             source: source.source,
             sourcePath: source.sourcePath,
             scriptPath,
             runId: identity.runId,
             resumeFromRunId: params.resumeFromRunId,
-            error: message,
           });
         }
         if (!journal) {
           const message = `Cannot resume workflow: run journal not found for ${params.resumeFromRunId}.`;
-          return workflowResult(message, {
+          return workflowError(message, {
             name: metaName,
-            status: "error",
-            agentCount: 0,
-            phases: [],
-            agents: [],
+            error: message,
             logs: source.warnings,
             source: source.source,
             sourcePath: source.sourcePath,
             scriptPath,
             runId: identity.runId,
             resumeFromRunId: params.resumeFromRunId,
-            error: message,
           });
         }
         resumeAgentResults = journal.agentResults;
@@ -332,19 +337,15 @@ export function createWorkflowTool(
           });
         } catch (error) {
           const message = `Workflow journal setup failed: ${error instanceof Error ? error.message : String(error)}`;
-          return workflowResult(message, {
+          return workflowError(message, {
             name: metaName,
-            status: "error",
-            agentCount: 0,
-            phases: [],
-            agents: [],
+            error: message,
             logs: source.warnings,
             source: source.source,
             sourcePath: source.sourcePath,
             scriptPath,
             runId: identity.runId,
             resumeFromRunId: params.resumeFromRunId,
-            error: message,
           });
         }
       }
@@ -369,7 +370,7 @@ export function createWorkflowTool(
         let customTools: ToolDefinition[] | undefined;
         let appendInstructions: string;
         if (call.schema !== undefined && call.schema !== null) {
-          capture = { value: undefined, called: false };
+          capture = { value: undefined, called: false, count: 0, duplicateCall: false };
           customTools = [createStructuredOutputTool(call.schema, capture)];
           appendInstructions = STRUCTURED_OUTPUT_CONTRACT;
         } else {
@@ -389,7 +390,7 @@ export function createWorkflowTool(
           progressEnabled: false,
           onProgress: undefined,
           onUsage: (usage) => options.updateStatus(ctx, childId, usage),
-          excludeTools: ["Agent", "workflow"],
+          excludeTools: CHILD_EXCLUDED_TOOLS,
           appendInstructions,
           customTools,
         });
@@ -441,7 +442,7 @@ export function createWorkflowTool(
             emit();
           },
           onAgentStart: (event) => {
-            snapshot.agents.push({ label: event.label, phase: event.phase, status: event.cached ? "done" : "running" });
+            snapshot.agents.push({ index: event.index, label: event.label, phase: event.phase, status: event.cached ? "done" : "running" });
             snapshot.agentCount = snapshot.agents.length;
             if (event.cached) {
               snapshot.cachedAgentCount = (snapshot.cachedAgentCount ?? 0) + 1;
@@ -449,11 +450,9 @@ export function createWorkflowTool(
             emit();
           },
           onAgentEnd: (event) => {
-            const agent = [...snapshot.agents]
-              .reverse()
-              .find((item) => item.label === event.label && (event.cached || item.status === "running"));
+            const agent = snapshot.agents.find((item) => item.index === event.index);
             if (agent) {
-              agent.status = event.result === null ? "error" : "done";
+              agent.status = event.failed ? "error" : "done";
             }
             emit();
           },
@@ -475,12 +474,12 @@ export function createWorkflowTool(
         const scriptPathText = snapshot.scriptPath ? `\nscriptPath: ${snapshot.scriptPath}` : "";
         const runIdText = snapshot.runId ? `\nrunId: ${snapshot.runId}` : "";
         return workflowResult(
-          `Workflow "${runResult.meta.name}" completed with ${runResult.agentCount} agent(s)${cachedText}.${scriptPathText}${runIdText}\n\nResult:\n${resultText}`,
+          `Workflow "${runResult.meta.name}" completed with ${runResult.agentCount} agent(s)${cachedText}.${scriptPathText}${runIdText}${formatWarnings(source.warnings)}${formatRecentLogs(snapshot.logs)}\n\nResult:\n${resultText}`,
           cloneSnapshot(snapshot),
         );
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
-        const aborted = Boolean(signal?.aborted) || isAbortMessage(message);
+        const aborted = Boolean(signal?.aborted) || isWorkflowAbortError(error);
         snapshot.status = aborted ? "aborted" : "error";
         snapshot.error = message;
         try {
@@ -494,7 +493,7 @@ export function createWorkflowTool(
           }
         }
         return workflowResult(
-          `Workflow "${metaName}" ${aborted ? "aborted" : "failed"}: ${message}`,
+          `Workflow "${metaName}" ${aborted ? "aborted" : "failed"}: ${message}${formatRecentLogs(snapshot.logs)}`,
           cloneSnapshot(snapshot),
         );
       }
@@ -519,6 +518,21 @@ function formatAgentStatus(agent: WorkflowAgentSnapshot): string {
   return `${mark} ${phase}${agent.label}`;
 }
 
+function agentRenderPriority(agent: WorkflowAgentSnapshot): number {
+  if (agent.status === "error") return 0;
+  if (agent.status === "running") return 1;
+  return 2;
+}
+
+function selectAgentsForRender(agents: WorkflowAgentSnapshot[], max = 6): WorkflowAgentSnapshot[] {
+  return agents
+    .map((agent, index) => ({ agent, index }))
+    .sort((a, b) => agentRenderPriority(a.agent) - agentRenderPriority(b.agent) || b.index - a.index)
+    .slice(0, max)
+    .sort((a, b) => a.index - b.index)
+    .map((item) => item.agent);
+}
+
 function renderWorkflowSnapshot(details: WorkflowToolDetails, theme: Theme): Container {
   const container = new Container();
   const done = details.agents.filter((agent) => agent.status === "done").length;
@@ -532,9 +546,18 @@ function renderWorkflowSnapshot(details: WorkflowToolDetails, theme: Theme): Con
     ),
   );
 
-  for (const agent of details.agents.slice(-6)) {
+  const renderedAgents = selectAgentsForRender(details.agents);
+  const hiddenAgents = details.agents.length - renderedAgents.length;
+  if (hiddenAgents > 0) {
+    container.addChild(new Text(`  ${theme.fg("muted", `... ${hiddenAgents} agent(s) not shown`)}`, 0, 0));
+  }
+  for (const agent of renderedAgents) {
     const color = agent.status === "error" ? "error" : "muted";
     container.addChild(new Text(`  ${theme.fg(color, formatAgentStatus(agent))}`, 0, 0));
+  }
+
+  for (const line of details.logs.slice(-3)) {
+    container.addChild(new Text(`  ${theme.fg("muted", line)}`, 0, 0));
   }
 
   if (details.error) {

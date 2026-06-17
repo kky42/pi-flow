@@ -98,7 +98,12 @@ export async function loadWorkflowJournal(dir: string, runId: string): Promise<L
     if (!line.trim()) {
       continue;
     }
-    const entry = JSON.parse(line) as Record<string, unknown>;
+    let entry: Record<string, unknown>;
+    try {
+      entry = JSON.parse(line) as Record<string, unknown>;
+    } catch {
+      break;
+    }
     if (entry.type === "run_start") {
       seenRunStart = entry.runId === runId;
       continue;
@@ -111,7 +116,7 @@ export async function loadWorkflowJournal(dir: string, runId: string): Promise<L
     if (typeof index !== "number" || typeof fingerprint !== "string") {
       continue;
     }
-    agentResults[index - 1] = { index, fingerprint, result: entry.result };
+    agentResults[index - 1] = { index, fingerprint, result: entry.result, failed: entry.failed === true };
   }
 
   if (!seenRunStart) {
@@ -146,26 +151,36 @@ export async function createWorkflowJournalWriter(params: {
     "utf8",
   );
 
+  let appendQueue = Promise.resolve();
+  const enqueueAppend = (value: unknown) => {
+    const next = appendQueue.then(() => appendJsonLine(path, value));
+    appendQueue = next.catch(() => {});
+    return next;
+  };
+
   return {
     runId: params.identity.runId,
     path,
     appendAgentResult: async (event) => {
-      await appendJsonLine(path, {
+      await enqueueAppend({
         type: "agent_result",
         index: event.index,
         fingerprint: event.fingerprint,
         label: event.label,
         phase: event.phase,
         subagentType: event.subagentType,
+        prompt: event.prompt,
+        schema: event.schema,
         cached: event.cached,
+        failed: event.failed === true,
         result: event.result,
       });
     },
     complete: async (result) => {
-      await appendJsonLine(path, { type: "run_complete", result });
+      await enqueueAppend({ type: "run_complete", result });
     },
     fail: async (error) => {
-      await appendJsonLine(path, { type: "run_error", error });
+      await enqueueAppend({ type: "run_error", error });
     },
   };
 }

@@ -4,7 +4,6 @@ import {
   type ExtensionAPI,
   type ExtensionContext,
   type ExtensionFactory,
-  type ModelRegistry,
   type Theme,
   type ToolDefinition,
 } from "@earendil-works/pi-coding-agent";
@@ -19,7 +18,7 @@ import {
 import { getSubagentProfiles } from "./profiles.ts";
 import { ConcurrencyLimiter } from "./core/concurrency.ts";
 import { filterProfilesForModelRegistry, resolveProfileModel } from "./core/model.ts";
-import { spawnSubagent } from "./core/spawn.ts";
+import { CHILD_EXCLUDED_TOOLS, spawnSubagent } from "./core/spawn.ts";
 import { textResult } from "./core/progress.ts";
 import { createWorkflowTool } from "./workflow/tool.ts";
 import { listSavedWorkflows } from "./workflow/registry.ts";
@@ -360,7 +359,7 @@ function createAgentTool(
           progressEnabled: effectiveState.progressEnabled,
           onProgress: effectiveState.progressEnabled ? onUpdate : undefined,
           onUsage: (usage) => options.updateStatus(ctx, toolCallId, usage),
-          excludeTools: ["Agent", "workflow"],
+          excludeTools: CHILD_EXCLUDED_TOOLS,
         });
       } finally {
         release();
@@ -448,10 +447,7 @@ export function createSubagentExtension(options: SubagentExtensionOptions = {}):
       // synchronously in execute() before the first await and releases it in the
       // finally. Acquisition is synchronous and release always runs, so the
       // in-flight count stays accurate across turns without a reset.
-      const profiles = filterProfilesForModelRegistry(
-        getSubagentProfiles(getAgentDir()),
-        (pi as unknown as { modelRegistry?: ModelRegistry }).modelRegistry,
-      );
+      const profiles = filterProfilesForModelRegistry(getSubagentProfiles(getAgentDir()), ctx.modelRegistry);
       const sections = [event.systemPrompt, buildCoordinatorPrompt(profiles)];
       if (workflowEnabled && tools.some((tool) => tool.name === "workflow")) {
         const savedWorkflows = listSavedWorkflows({

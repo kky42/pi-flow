@@ -38,7 +38,7 @@ Recent comparison run:
 | Implementation | large, 213 files | ❌ | ❌ |
 | Implementation | huge, 703 files | ❌ | ✅ |
 
-This table measures only the routing decision: whether the main agent chose to invoke a subagent. It does not score answer quality or task completion. Source report: `/var/folders/xg/zjkd61716j76w0gl6s2vk85r0000gn/T/pi-subagent-main-agent-e2e-1781084243842/report.json`.
+This table measures only the routing decision: whether the main agent chose to invoke a subagent. It does not score answer quality or task completion. The e2e runner writes a fresh report under the OS temp directory for each run.
 
 ## Example
 
@@ -62,7 +62,7 @@ The explorer returns a concise repo map, and the main agent relays the useful pa
 
 ## Workflows
 
-For fan-out work — codebase audits, multi-perspective review, broad research — ask pi for a *workflow*. The model can either write a small deterministic JavaScript script inline or reuse a saved workflow from disk. The `workflow` tool runs the script, fans work out across isolated subagents, and synthesizes the results.
+For fan-out work — codebase audits, multi-perspective review, broad research — ask pi for a *workflow*. The model can either write a small trusted JavaScript script inline or reuse a saved workflow from disk. The `workflow` tool runs the script, fans work out across isolated subagents, and synthesizes the results.
 
 ```text
 Run a workflow to audit this repo for TODOs, FIXMEs, and skipped tests, then summarize.
@@ -77,12 +77,14 @@ Each file starts with `export const meta = { name, description }`; put both the 
 
 Inline workflow runs are auto-persisted under the current session's workflow directory when the session is persisted. The tool result includes `scriptPath` and `runId`, so an agent can edit that file and rerun with `workflow({ scriptPath, resumeFromRunId })`. Resume reuses cached `agent()` results for the longest unchanged prefix; the first edited/new `agent()` call and everything after it runs live.
 
-The script runs in a restricted VM context (not a security boundary; saved workflows are executable orchestration you should trust) with these globals:
+The script runs in an isolated worker/VM so pi can detect stalls and abort unresponsive scripts, but it is **not a security sandbox**. Initial synchronous execution is bounded (5s by default), and post-`await` event-loop stalls are caught by a heartbeat watchdog. Treat saved workflows like trusted extensions, and treat inline workflows as model-written code executed in-process. The workflow globals are:
 
 - `agent(prompt, opts)` — spawn one subagent; returns its final text, or a schema-validated object when `opts.schema` is set. `opts`: `label`, `phase`, `subagent_type`, `schema`.
 - `parallel(thunks)` — run independent `() => agent(...)` thunks concurrently; results come back in input order.
 - `pipeline(items, ...stages)` — run each item through the stages in order while different items run concurrently; each stage gets `(previousValue, originalItem, index)`.
 - `phase(title)`, `log(message)`, `args` (the optional JSON passed to the tool), and `cwd`.
+
+Workflow scripts must call `agent()` at least once and return a JSON-serializable value; return a summary string/object, or `null` when there is intentionally no synthesized result. Results are canonicalized to JSON: `undefined` object fields are omitted, non-finite numbers become `null`, and non-plain objects such as `Map`, `Set`, and `BigInt` are rejected.
 
 The model writes and runs something like:
 
@@ -102,13 +104,13 @@ return await agent(`Summarize these findings:\n${findings.join("\n\n")}`, { labe
 
 Key properties:
 
-- **Reusable.** Save deterministic workflow scripts on disk and invoke them by `meta.name`; ad-hoc inline scripts still work and return a session `scriptPath`.
+- **Reusable.** Save trusted workflow scripts on disk and invoke them by `meta.name`; ad-hoc inline scripts still work and return a session `scriptPath`.
 - **Trust-gated.** Project-local `.pi/workflows` are ignored unless the project is trusted, and saved workflow files are re-parsed and path-checked before execution.
 - **Real subagents.** Each `agent()` runs through the same spawn path as the `Agent` tool, so `subagent_type` gives it that profile's model, thinking level, tools, and system prompt.
-- **Structured output.** Pass a JSON Schema as `opts.schema` and `agent()` returns a validated object instead of text — ideal for composing results in `parallel`/`pipeline`.
-- **Deterministic.** `Date.now()`, `Math.random()`, and `new Date()` are rejected at parse time, so a workflow replays identically given the same agent outputs.
+- **Structured output.** Pass a JSON Schema as `opts.schema` and `agent()` returns the first validated object instead of text — ideal for composing results in `parallel`/`pipeline`. The injected `structured_output` tool terminates the child turn; duplicate successful calls are ignored.
+- **Cooperative determinism.** Direct `Date.now()`, `Math.random()`, and `new Date()` uses are rejected to keep normal model-written scripts replayable. This is a lint-style check for trusted code, not a sandbox against malicious JavaScript.
 - **Resumable.** Use the returned `runId` with an edited `scriptPath` to reuse cached subagent outputs for the unchanged prefix of `agent()` calls.
-- **Bounded.** Workflow fan-out shares the same global concurrency cap as the `Agent` tool; excess agents queue and drain as slots free.
+- **Bounded.** Workflow fan-out shares the same global concurrency cap as the `Agent` tool; excess agents queue and drain as slots free. A workflow also has a hard cap on total `agent()` calls, retained logs, and the orchestration worker heap (512MB old generation by default; this does not cap subagent/tool subprocess memory).
 - **Foreground.** A workflow is a single blocking tool call. Subagents cannot launch workflows or other subagents.
 
 The `workflow` tool is on by default. Disable it for a subagents-only setup:
@@ -166,6 +168,14 @@ This downloads fresh GitHub fixtures across four size buckets (`octocat/Spoon-Kn
 - small README implementation
 - a `workflow` fan-out scenario (medium and large buckets; observational by default — INCONCLUSIVE if the model does not reach for the `workflow` tool, strict only under `-- --strict-observed`)
 - small, medium, large, and huge fixture buckets
+
+Run the workflow feature e2e smoke:
+
+```bash
+npm run e2e:workflow-features
+```
+
+This exercises workflow tool selection, real subagent fan-out, saved/resume behavior, structured output, abort/limit handling, and progress snapshots against fresh pi sessions.
 
 To compare the same scenarios against Claude Code:
 

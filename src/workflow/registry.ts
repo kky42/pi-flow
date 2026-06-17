@@ -133,6 +133,10 @@ export function loadWorkflowScriptPath(
     return { ok: false, message: `Could not resolve workflow scriptPath ${scriptPath}: ${errorMessage(error)}`, warnings };
   }
 
+  if (extname(realPath) !== WORKFLOW_FILE_EXTENSION) {
+    return { ok: false, message: `Workflow scriptPath must resolve to a ${WORKFLOW_FILE_EXTENSION} file.`, warnings };
+  }
+
   const roots = getWorkflowPathRoots(options)
     .map((root) => ({ ...root, realPath: safeRealDirectory(root.path) }))
     .filter((root): root is WorkflowPathRoot & { realPath: string } => Boolean(root.realPath));
@@ -162,6 +166,14 @@ export function loadWorkflowScriptPath(
 
   try {
     const meta = parseWorkflowScript(script).meta;
+    const name = meta.name.trim();
+    if (root.scope !== "session" && !isValidSavedWorkflowName(name)) {
+      return {
+        ok: false,
+        message: `Workflow scriptPath is invalid: meta.name must match ${VALID_SAVED_WORKFLOW_NAME}`,
+        warnings,
+      };
+    }
     return { ok: true, workflow: { path: realPath, root: root.realPath, scope: root.scope, script, meta }, warnings };
   } catch (error) {
     return {

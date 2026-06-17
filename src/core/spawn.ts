@@ -20,6 +20,13 @@ import {
 import type { SubagentProfile, SubagentUsage } from "../types.ts";
 
 /**
+ * The delegation tools a spawned child must never receive, so subagents cannot
+ * recursively fan out. Owned by the spawn core and used as the default exclude
+ * list so no caller can accidentally under-specify the nesting block.
+ */
+export const CHILD_EXCLUDED_TOOLS: readonly string[] = ["Agent", "workflow"];
+
+/**
  * Parameters for a single subagent run. This is the shared spawn primitive used
  * by both the `Agent` tool and (later) the `workflow` tool's `agent()` global.
  * Concurrency accounting lives in the callers, not here.
@@ -36,7 +43,7 @@ export interface SpawnSubagentParams {
   progressEnabled: boolean;
   onProgress: ((result: AgentToolResult) => void) | undefined;
   onUsage: (usage: SubagentUsage) => void;
-  /** Tools (and the extensions that provide them) to keep out of the child session. Defaults to ["Agent"]. */
+  /** Tools (and the extensions that provide them) to keep out of the child session. Defaults to {@link CHILD_EXCLUDED_TOOLS}. */
   excludeTools?: readonly string[];
   /** Text appended after the task prompt (e.g. a structured-output contract). */
   appendInstructions?: string;
@@ -59,7 +66,7 @@ export async function spawnSubagent(params: SpawnSubagentParams): Promise<AgentT
     onUsage,
   } = params;
   const subagentType = profile.name;
-  const excludeTools = params.excludeTools ?? ["Agent"];
+  const excludeTools = params.excludeTools ?? CHILD_EXCLUDED_TOOLS;
   const customTools = params.customTools ?? [];
   // A pinned tool allow-list must still admit any injected tools (e.g. structured_output).
   const toolAllowList =

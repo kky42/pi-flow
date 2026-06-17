@@ -4,6 +4,8 @@ import type { TSchema } from "typebox";
 export interface StructuredOutputCapture<T = unknown> {
   value: T | undefined;
   called: boolean;
+  count: number;
+  duplicateCall: boolean;
 }
 
 export const STRUCTURED_OUTPUT_CONTRACT = [
@@ -11,9 +13,9 @@ export const STRUCTURED_OUTPUT_CONTRACT = [
   "- Your final action MUST be a single structured_output tool call.",
   "- The structured_output arguments ARE this subagent's return value.",
   "- Do not write a prose final answer instead of calling structured_output.",
-  "- Inspect files or run commands first if needed, then call structured_output exactly once.",
+  "- Inspect files or run commands first if needed, then call structured_output once.",
   "- If schema validation fails, read the error and call structured_output again with a corrected shape.",
-  "- After calling structured_output successfully, end your turn — no acknowledgment needed.",
+  "- After calling structured_output successfully, end your turn — no acknowledgment needed. Duplicate successful calls are ignored.",
 ].join("\n");
 
 /**
@@ -30,9 +32,9 @@ export const WORKFLOW_PLAIN_TEXT_OUTPUT_NOTE = [
 
 /**
  * A terminating output tool: pi validates the model's call against `schema`, and
- * the validated arguments become the subagent's structured result (captured into
- * `capture`). pinned pi (0.79.4) has no `terminate` flag, so the prompt contract
- * (STRUCTURED_OUTPUT_CONTRACT) is what stops the subagent after a single call.
+ * the first validated arguments become the subagent's structured result
+ * (captured into `capture`). `terminate: true` lets pi end on the tool call;
+ * the count guard remains for runtimes/providers that somehow produce duplicates.
  */
 export function createStructuredOutputTool(
   schema: unknown,
@@ -49,11 +51,17 @@ export function createStructuredOutputTool(
     ],
     parameters: schema as TSchema,
     async execute(_toolCallId, params) {
-      capture.value = params;
-      capture.called = true;
+      capture.count += 1;
+      if (!capture.called) {
+        capture.value = params;
+        capture.called = true;
+      } else {
+        capture.duplicateCall = true;
+      }
       return {
-        content: [{ type: "text" as const, text: "Structured output received." }],
-        details: params,
+        content: [{ type: "text" as const, text: capture.duplicateCall ? "Structured output already received; ignoring duplicate." : "Structured output received." }],
+        details: capture.value,
+        terminate: true,
       };
     },
   });

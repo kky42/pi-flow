@@ -11,8 +11,10 @@ import {
   runWorkflow,
   type WorkflowAgentRunner,
 } from "../src/workflow/runtime.ts";
-import { loadSavedWorkflowRegistry } from "../src/workflow/registry.ts";
+import { loadSavedWorkflowRegistry, loadWorkflowScriptPath } from "../src/workflow/registry.ts";
 import { createWorkflowTool } from "../src/workflow/tool.ts";
+import { loadWorkflowJournal } from "../src/workflow/journal.ts";
+import { createStructuredOutputTool, type StructuredOutputCapture } from "../src/workflow/structured-output.ts";
 
 const META = "export const meta = { name: 'wf', description: 'a workflow' };\n";
 
@@ -58,6 +60,10 @@ describe("parseWorkflowScript", () => {
     expect(() => parseWorkflowScript(`${META}const d = new Date();`)).toThrow(/deterministic/);
     expect(() => parseWorkflowScript(`${META}const now = Date.now; now();`)).toThrow(/deterministic|Date/i);
     expect(() => parseWorkflowScript(`${META}const D = Date; new D();`)).toThrow(/deterministic|Date/i);
+  });
+
+  it("allows Date as a deterministic data field name", () => {
+    expect(() => parseWorkflowScript(`${META}const schema = { type: 'object', properties: { Date: { type: 'string' } } };\nreturn await agent('x', { schema });`)).not.toThrow();
   });
 
   it("rejects non-literal meta", () => {
@@ -151,7 +157,7 @@ describe("runWorkflow", () => {
         },
       ),
     ).rejects.toThrow(/awaited before the workflow returns/);
-    expect(completed).toEqual(["a", "b"]);
+    expect(completed).toEqual(["a"]);
   });
 
 
@@ -162,7 +168,7 @@ describe("runWorkflow", () => {
       return call.label;
     };
     await runWorkflow(
-      `${META}await agent('a', { label: 'one' });\nawait agent('b', { label: 'two', subagent_type: 'explorer' });`,
+      `${META}await agent('a', { label: 'one' });\nawait agent('b', { label: 'two', subagent_type: 'explorer' });\nreturn null;`,
       { cwd: "/tmp", limiter: new ConcurrencyLimiter(4), runAgent },
     );
     expect(seen).toEqual(["general-purpose", "explorer"]);
@@ -222,6 +228,18 @@ describe("runWorkflow", () => {
     expect(logs.some((line) => line.includes("boom") && line.includes("kaboom"))).toBe(true);
   });
 
+  it("does not treat a successful null agent result as a failed agent", async () => {
+    const ended: Array<{ result: unknown; failed?: boolean }> = [];
+    const result = await runWorkflow(`${META}return await agent('x', { label: 'nullable' });`, {
+      cwd: "/tmp",
+      limiter: new ConcurrencyLimiter(4),
+      runAgent: async () => null,
+      onAgentEnd: (event) => ended.push({ result: event.result, failed: event.failed }),
+    });
+    expect(result.result).toBeNull();
+    expect(ended).toEqual([{ result: null, failed: false }]);
+  });
+
   it("isolates a failing parallel branch without sinking the others", async () => {
     const runAgent: WorkflowAgentRunner = async (call) => {
       if (call.label === "bad") {
@@ -256,6 +274,84 @@ describe("runWorkflow", () => {
     ).rejects.toThrow(/abort/i);
   });
 
+  it("does not let scripts swallow abort and report success", async () => {
+    const controller = new AbortController();
+    await expect(
+      runWorkflow(`${META}try { await agent('x', { label: 'a' }); } catch { return 'ignored abort'; }`, {
+        cwd: "/tmp",
+        limiter: new ConcurrencyLimiter(1),
+        runAgent: async () => {
+          controller.abort();
+          return "late";
+        },
+        signal: controller.signal,
+      }),
+    ).rejects.toThrow(/abort/i);
+  });
+
+  it("terminates an async script worker that stalls after an await", async () => {
+    await expect(
+      runWorkflow(`${META}await Promise.resolve();\nwhile (true) {}`, {
+        cwd: "/tmp",
+        limiter: new ConcurrencyLimiter(1),
+        runAgent: echo,
+        limits: { workerHeartbeatIntervalMs: 10, workerStallTimeoutMs: 50, abortGraceMs: 10 },
+      }),
+    ).rejects.toThrow(/stalled/i);
+  });
+
+  it("terminates a responsive script worker that stops making workflow progress", async () => {
+    await expect(
+      runWorkflow(`${META}await new Promise(() => {});`, {
+        cwd: "/tmp",
+        limiter: new ConcurrencyLimiter(1),
+        runAgent: echo,
+        limits: { workerHeartbeatIntervalMs: 10, workerStallTimeoutMs: 1_000, workerIdleTimeoutMs: 50 },
+      }),
+    ).rejects.toThrow(/no progress/i);
+  });
+
+  it("enforces a maximum number of workflow agent calls", async () => {
+    await expect(
+      runWorkflow(`${META}return await parallel([1, 2, 3].map((i) => () => agent('x' + i, { label: 'a' + i })));`, {
+        cwd: "/tmp",
+        limiter: new ConcurrencyLimiter(2),
+        runAgent: echo,
+        limits: { maxAgentCalls: 2 },
+      }),
+    ).rejects.toThrow(/maximum workflow agent calls/i);
+  });
+
+  it("requires workflow limits to be positive integers", async () => {
+    await expect(
+      runWorkflow(`${META}return await agent('x');`, {
+        cwd: "/tmp",
+        limiter: new ConcurrencyLimiter(1),
+        runAgent: echo,
+        limits: { maxAgentCalls: 0.5 },
+      }),
+    ).rejects.toThrow(/positive integer/i);
+  });
+
+  it("rejects workflow results that cannot be represented as JSON", async () => {
+    await expect(
+      runWorkflow(`${META}await agent('x', { label: 'a' });\nreturn 1n;`, {
+        cwd: "/tmp",
+        limiter: new ConcurrencyLimiter(1),
+        runAgent: echo,
+      }),
+    ).rejects.toThrow(/JSON-serializable/i);
+  });
+
+  it("normalizes JSON-like workflow results to canonical JSON", async () => {
+    const result = await runWorkflow(`${META}await agent('x', { label: 'a' });\nreturn { ok: true, omitted: undefined, bad: NaN, list: [undefined, Infinity, 'x'] };`, {
+      cwd: "/tmp",
+      limiter: new ConcurrencyLimiter(1),
+      runAgent: echo,
+    });
+    expect(result.result).toEqual({ ok: true, bad: null, list: [null, null, "x"] });
+  });
+
   it("requires every agent call to be awaited or returned", async () => {
     await expect(
       runWorkflow(`${META}return { pending: agent('x', { label: 'a' }) };`, {
@@ -266,25 +362,27 @@ describe("runWorkflow", () => {
     ).rejects.toThrow(/awaited or returned/);
   });
 
-  it("waits for parallel siblings before surfacing fatal agent-result hook errors", async () => {
+  it("logs agent-result hook failures without aborting sibling work", async () => {
     let completed = 0;
-    await expect(
-      runWorkflow(`${META}return await parallel([\n() => agent('fast', { label: 'fast' }),\n() => agent('slow', { label: 'slow' })\n]);`, {
-        cwd: "/tmp",
-        limiter: new ConcurrencyLimiter(4),
-        runAgent: async (call) => {
-          if (call.label === "slow") await delay(5);
-          completed++;
-          return call.label;
-        },
-        onAgentResult: (event) => {
-          if (event.label === "fast") {
-            throw new Error("journal full");
-          }
-        },
-      }),
-    ).rejects.toThrow(/agent-result hook failed/);
+    const logs: string[] = [];
+    const result = await runWorkflow(`${META}return await parallel([\n() => agent('fast', { label: 'fast' }),\n() => agent('slow', { label: 'slow' })\n]);`, {
+      cwd: "/tmp",
+      limiter: new ConcurrencyLimiter(4),
+      runAgent: async (call) => {
+        if (call.label === "slow") await delay(5);
+        completed++;
+        return call.label;
+      },
+      onAgentResult: (event) => {
+        if (event.label === "fast") {
+          throw new Error("journal full");
+        }
+      },
+      onLog: (message) => logs.push(message),
+    });
+    expect(result.result).toEqual(["fast", "slow"]);
     expect(completed).toBe(2);
+    expect(logs.some((line) => line.includes("journal full"))).toBe(true);
   });
 
   it("reuses cached agent results for the longest unchanged prefix on resume", async () => {
@@ -325,6 +423,41 @@ describe("runWorkflow", () => {
     expect(secondRunEvents.map((event) => event.cached)).toEqual([true, false]);
   });
 
+  it("does not replay cached failed agent results on resume", async () => {
+    const firstRunEvents: any[] = [];
+    const script = `${META}const a = await agent('first', { label: 'one' });\nconst b = await agent('second', { label: 'two' });\nreturn [a, b];`;
+    await runWorkflow(script, {
+      cwd: "/tmp",
+      limiter: new ConcurrencyLimiter(4),
+      runAgent: async (call) => {
+        if (call.label === "two") throw new Error("transient");
+        return `${call.prompt}:live1`;
+      },
+      onAgentResult: (event) => {
+        firstRunEvents.push(event);
+      },
+    });
+
+    const liveLabels: string[] = [];
+    const secondRunEvents: any[] = [];
+    const second = await runWorkflow(script, {
+      cwd: "/tmp",
+      limiter: new ConcurrencyLimiter(4),
+      runAgent: async (call) => {
+        liveLabels.push(call.label);
+        return `${call.prompt}:live2`;
+      },
+      resumeAgentResults: firstRunEvents.map(({ index, fingerprint, result, failed }) => ({ index, fingerprint, result, failed })),
+      onAgentResult: (event) => {
+        secondRunEvents.push(event);
+      },
+    });
+
+    expect(second.result).toEqual(["first:live1", "second:live2"]);
+    expect(liveLabels).toEqual(["two"]);
+    expect(secondRunEvents.map((event) => event.cached)).toEqual([true, false]);
+  });
+
   it("emits phase, agent start/end, and failure-log progress events in order", async () => {
     const events: string[] = [];
     const runAgent: WorkflowAgentRunner = async (call) => {
@@ -334,7 +467,7 @@ describe("runWorkflow", () => {
       return call.label;
     };
     await runWorkflow(
-      `${META}phase('scan');\nawait agent('a', { label: 'ok' });\nawait agent('b', { label: 'boom' });`,
+      `${META}phase('scan');\nawait agent('a', { label: 'ok' });\nawait agent('b', { label: 'boom' });\nreturn null;`,
       {
         cwd: "/tmp",
         limiter: new ConcurrencyLimiter(4),
@@ -353,6 +486,49 @@ describe("runWorkflow", () => {
     expect(events).toContain("log");
     expect(events.indexOf("phase:scan")).toBeLessThan(events.indexOf("start:ok"));
     expect(events.indexOf("start:ok")).toBeLessThan(events.indexOf("end:ok:ok"));
+  });
+
+  it("assigns each agent a distinct index even when labels collide", async () => {
+    const ended: Array<{ index: number; failed?: boolean }> = [];
+    const runAgent: WorkflowAgentRunner = async (call) => {
+      if (call.prompt === "boom") throw new Error("kaboom");
+      return call.label;
+    };
+    await runWorkflow(
+      `${META}await parallel([\n() => agent('ok', { label: 'dup' }),\n() => agent('boom', { label: 'dup' }),\n]);\nreturn null;`,
+      {
+        cwd: "/tmp",
+        limiter: new ConcurrencyLimiter(4),
+        runAgent,
+        onAgentEnd: (event) => ended.push({ index: event.index, failed: event.failed }),
+      },
+    );
+    // Same label, distinct indices: the UI keys on index so the failure mark lands on the right row.
+    expect(ended.map((event) => event.index).sort()).toEqual([1, 2]);
+    const byIndex = new Map(ended.map((event) => [event.index, event.failed]));
+    expect(byIndex.get(1)).toBe(false);
+    expect(byIndex.get(2)).toBe(true);
+  });
+});
+
+describe("structured output capture", () => {
+  it("captures the first successful call and ignores duplicate calls", async () => {
+    const capture: StructuredOutputCapture = { value: undefined, called: false, count: 0, duplicateCall: false };
+    const tool = createStructuredOutputTool({ type: "object" }, capture) as unknown as {
+      execute: (id: string, params: unknown) => Promise<{ content: Array<{ text: string }>; terminate?: boolean }>;
+    };
+
+    const first = await tool.execute("c1", { kind: "first" });
+    expect(capture.value).toEqual({ kind: "first" });
+    expect(capture.called).toBe(true);
+    expect(first.terminate).toBe(true);
+    expect(first.content[0].text).toContain("received");
+
+    const second = await tool.execute("c2", { kind: "second" });
+    expect(capture.value).toEqual({ kind: "first" }); // first wins; not overwritten
+    expect(capture.count).toBe(2);
+    expect(capture.duplicateCall).toBe(true);
+    expect(second.content[0].text).toContain("ignoring duplicate");
   });
 });
 
@@ -417,6 +593,43 @@ describe("saved workflow registry", () => {
       expect(registry.warnings.some((warning) => warning.includes("outside") || warning.includes("escape"))).toBe(true);
     });
   });
+
+  it("rejects scriptPath workflows in saved roots when meta.name is not a saved-workflow name", () => {
+    withTempDir((dir) => {
+      const agentDir = join(dir, "agent");
+      const workflowsDir = join(agentDir, "workflows");
+      mkdirSync(workflowsDir, { recursive: true });
+      const scriptPath = join(workflowsDir, "bad-name.js");
+      writeFileSync(scriptPath, workflowScript("Bad Name"));
+
+      const result = loadWorkflowScriptPath(scriptPath, { agentDir, cwd: join(dir, "project"), projectTrusted: false });
+
+      expect(result.ok).toBe(false);
+      expect(result.ok ? "" : result.message).toContain("meta.name must match");
+    });
+  });
+
+  it("loads a resume journal up to a malformed trailing line", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "pi-subagent-workflows-"));
+    try {
+      const runId = "wf_resume_test";
+      writeFileSync(
+        join(dir, `run-${runId}.jsonl`),
+        [
+          JSON.stringify({ type: "run_start", runId }),
+          JSON.stringify({ type: "agent_result", index: 1, fingerprint: "a", result: "one" }),
+          "{ truncated",
+          JSON.stringify({ type: "agent_result", index: 2, fingerprint: "b", result: "two" }),
+        ].join("\n"),
+      );
+
+      const journal = await loadWorkflowJournal(dir, runId);
+
+      expect(journal?.agentResults).toEqual([{ index: 1, fingerprint: "a", result: "one", failed: false }]);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
 });
 
 describe("workflow tool rendering", () => {
@@ -445,9 +658,9 @@ describe("workflow tool rendering", () => {
       agentCount: 3,
       phases: ["scan"],
       agents: [
-        { label: "alpha", status: "running" },
-        { label: "beta", phase: "scan", status: "done" },
-        { label: "gamma", status: "error" },
+        { index: 1, label: "alpha", status: "running" },
+        { index: 2, label: "beta", phase: "scan", status: "done" },
+        { index: 3, label: "gamma", status: "error" },
       ],
       logs: [],
     };
@@ -468,7 +681,7 @@ describe("workflow tool rendering", () => {
       status: "completed",
       agentCount: 1,
       phases: [],
-      agents: [{ label: "only", status: "done" }],
+      agents: [{ index: 1, label: "only", status: "done" }],
       logs: [],
     };
     const completedText = renderToText(

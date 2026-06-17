@@ -26,6 +26,7 @@ export interface SubagentExtensionOptions {
 }
 
 export interface WorkflowAgentSnapshot {
+  index: number;
   label: string;
   phase?: string;
   status: "running" | "done" | "error";
