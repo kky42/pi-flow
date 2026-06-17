@@ -24,6 +24,7 @@ export const WORKFLOW_PROMPT_SNIPPET =
 export const WORKFLOW_PROMPT_GUIDELINES = [
   "Use workflow only when the user explicitly asks for a workflow, fan-out, or multi-agent orchestration, when a saved workflow matches the user's request, or when a task decomposes into many independent subagent runs that you then synthesize.",
   "Prefer `workflow({ name, args })` when an available saved workflow matches the request. Use `workflow({ scriptPath, resumeFromRunId, args })` to rerun or resume an edited persisted script. Use inline `script` only for ad-hoc orchestration.",
+  "If the user asks to save a reusable workflow, copy or write a `.js` file directly to `~/.pi/agent/workflows/` for global scope or `.pi/workflows/` for project scope. The file must start with `export const meta = { name, description }`; use a filename that exactly matches the workflow name. After saving, invoke it with `workflow({ name, args })`.",
   "For inline scripts, pass one raw JavaScript string in the `script` parameter. No Markdown fences, no prose around it. Inline runs return `scriptPath` and `runId` for later editing/resume.",
   "The script's first statement must be `export const meta = { name: 'short_name', description: 'non-empty description' }`. meta must be a plain literal.",
   "Available globals: agent(prompt, opts), parallel(thunks), pipeline(items, ...stages), phase(title), log(message), args, cwd. Every workflow must call agent() at least once.",
