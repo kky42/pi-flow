@@ -24,6 +24,7 @@
     "check": "tsc --noEmit && vitest run",
     "e2e": "node scripts/e2e/main-agent-comparison.mjs",
     "e2e:compare-claude": "node scripts/e2e/main-agent-comparison.mjs --with-claude",
+    "e2e:workflow-features": "node scripts/e2e/workflow-features.mjs",
     "test": "vitest run"
   },
   "peerDependencies": {
