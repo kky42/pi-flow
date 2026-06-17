@@ -100,8 +100,6 @@ type AnyNode = Node & { [key: string]: any; start: number; end: number };
 
 const NONDETERMINISM_ERROR =
   "Workflow scripts must be deterministic: Date.now()/Math.random()/new Date() are unavailable";
-const DYNAMIC_CODE_ERROR =
-  "Workflow scripts cannot use dynamic code generation or constructor escape paths";
 
 const DEFAULT_SUBAGENT_TYPE = "general-purpose";
 
@@ -459,11 +457,8 @@ function propertyKey(node: AnyNode, path: string): string {
 }
 
 function assertDeterministicAst(node: AnyNode): void {
-  if (isDateNowCall(node) || isMathRandomCall(node) || isNewDateExpression(node)) {
+  if (isNondeterministicReference(node)) {
     throw new Error(NONDETERMINISM_ERROR);
-  }
-  if (isDynamicCodePath(node)) {
-    throw new Error(DYNAMIC_CODE_ERROR);
   }
   for (const child of astChildren(node)) {
     assertDeterministicAst(child);
@@ -486,95 +481,29 @@ function isAstNode(value: unknown): value is AnyNode {
   return !!value && typeof value === "object" && typeof (value as AnyNode).type === "string";
 }
 
-function isDateNowCall(node: AnyNode): boolean {
-  return node.type === "CallExpression" && isMemberExpression(node.callee, "Date", "now");
-}
-
-function isMathRandomCall(node: AnyNode): boolean {
-  return node.type === "CallExpression" && isMemberExpression(node.callee, "Math", "random");
-}
-
-function isNewDateExpression(node: AnyNode): boolean {
-  return node.type === "NewExpression" && node.callee?.type === "Identifier" && node.callee.name === "Date";
-}
-
-function isDynamicCodePath(node: AnyNode): boolean {
-  if (node.type === "ImportExpression" || node.type === "ThisExpression") return true;
-  if (node.type === "Identifier" && isUnsafeIdentifier(node.name)) return true;
-  if (node.type === "Property") {
-    if (node.computed) return true;
-    if (isUnsafePropertyName(propertyKeyName(node.key as AnyNode))) return true;
-  }
-  if (node.type === "CallExpression" && node.callee?.type === "Identifier" && node.callee.name === "eval") return true;
-  if (
-    (node.type === "CallExpression" || node.type === "NewExpression") &&
-    node.callee?.type === "Identifier" &&
-    node.callee.name === "Function"
-  ) {
+// Determinism is the only invariant this scan enforces. Resume-by-replay assumes
+// a script reproduces the same agent() calls from the same inputs, so the two
+// host-exposed sources of nondeterminism are rejected: any reference to `Date`
+// (new Date, Date.now, or aliasing it to a local) and `Math.random` (`Math` is
+// otherwise exposed for Math.floor/max/etc.).
+//
+// Earlier revisions also blocked "dynamic code / constructor escape" paths —
+// computed member access, `.constructor`, `this`, `Reflect`, `Function`, etc.
+// That was removed deliberately: the node:vm is explicitly NOT a security
+// boundary (the subagents a script spawns already run with full tools), so the
+// hardening guarded nothing while its unavoidable side effect — banning all
+// computed access with a non-literal key — rejected idiomatic obj[key] / arr[i]
+// scripts that models reach for constantly.
+function isNondeterministicReference(node: AnyNode): boolean {
+  if (node.type === "Identifier" && node.name === "Date") {
     return true;
   }
-  if (node.type !== "MemberExpression") {
-    return false;
-  }
-  const propertyName = propertyNameOf(node);
-  if (isUnsafePropertyName(propertyName)) {
-    return true;
-  }
-  if (node.object?.type === "Identifier" && node.object.name === "Object" && isUnsafeObjectReflection(propertyName)) {
-    return true;
-  }
-  return node.computed && !isNumericLiteral(node.property);
-}
-
-function isMemberExpression(node: AnyNode | undefined, objectName: string, propertyName: string): boolean {
-  if (node?.type !== "MemberExpression" || node.object?.type !== "Identifier" || node.object.name !== objectName) {
-    return false;
-  }
-  return propertyNameOf(node) === propertyName;
-}
-
-function isUnsafeIdentifier(name: string): boolean {
   return (
-    name === "globalThis" ||
-    name === "Reflect" ||
-    name === "Function" ||
-    name === "eval" ||
-    name === "Date" ||
-    name === "Atomics" ||
-    name === "SharedArrayBuffer"
+    node.type === "MemberExpression" &&
+    node.object?.type === "Identifier" &&
+    node.object.name === "Math" &&
+    propertyNameOf(node) === "random"
   );
-}
-
-function isUnsafePropertyName(propertyName: string | undefined): boolean {
-  return (
-    propertyName === "constructor" ||
-    propertyName === "prototype" ||
-    propertyName === "__proto__" ||
-    propertyName === "__lookupGetter__" ||
-    propertyName === "__lookupSetter__" ||
-    isUnsafeObjectReflection(propertyName)
-  );
-}
-
-function isUnsafeObjectReflection(propertyName: string | undefined): boolean {
-  return (
-    propertyName === "getPrototypeOf" ||
-    propertyName === "getOwnPropertyDescriptor" ||
-    propertyName === "getOwnPropertyDescriptors" ||
-    propertyName === "setPrototypeOf" ||
-    propertyName === "defineProperty" ||
-    propertyName === "defineProperties" ||
-    propertyName === "create"
-  );
-}
-
-function isNumericLiteral(node: AnyNode | undefined): boolean {
-  return node?.type === "Literal" && typeof node.value === "number";
-}
-
-function propertyKeyName(node: AnyNode | undefined): string | undefined {
-  if (node?.type === "Identifier") return node.name;
-  return staticStringOf(node);
 }
 
 function propertyNameOf(node: AnyNode): string | undefined {

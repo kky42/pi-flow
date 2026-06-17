@@ -56,8 +56,8 @@ describe("parseWorkflowScript", () => {
     expect(() => parseWorkflowScript(`${META}const t = Date.now();`)).toThrow(/deterministic/);
     expect(() => parseWorkflowScript(`${META}const r = Math.random();`)).toThrow(/deterministic/);
     expect(() => parseWorkflowScript(`${META}const d = new Date();`)).toThrow(/deterministic/);
-    expect(() => parseWorkflowScript(`${META}const now = Date.now; now();`)).toThrow(/dynamic code|Date/i);
-    expect(() => parseWorkflowScript(`${META}const D = Date; new D();`)).toThrow(/dynamic code|Date/i);
+    expect(() => parseWorkflowScript(`${META}const now = Date.now; now();`)).toThrow(/deterministic|Date/i);
+    expect(() => parseWorkflowScript(`${META}const D = Date; new D();`)).toThrow(/deterministic|Date/i);
   });
 
   it("rejects non-literal meta", () => {
@@ -89,44 +89,35 @@ describe("runWorkflow", () => {
     ).rejects.toThrow(/must call agent/i);
   });
 
-  it("blocks dynamic code generation escape attempts inside the workflow vm", async () => {
-    await expect(
-      runWorkflow(`${META}log.constructor.constructor('return process')();\nreturn await agent('x');`, {
-        cwd: "/tmp",
-        limiter: new ConcurrencyLimiter(4),
-        runAgent: echo,
-      }),
-    ).rejects.toThrow(/dynamic code|constructor/i);
-    await expect(
-      runWorkflow(
-        `${META}Object.getOwnPropertyDescriptor(Object.getPrototypeOf(log), 'constructor').value('return process')();\nreturn await agent('x');`,
-        {
-          cwd: "/tmp",
-          limiter: new ConcurrencyLimiter(4),
-          runAgent: echo,
-        },
-      ),
-    ).rejects.toThrow(/dynamic code|constructor/i);
-    await expect(
-      runWorkflow(
-        `${META}const { constructor: Obj } = globalThis;\nconst { constructor: F } = Obj;\nF('return process')();\nreturn await agent('x');`,
-        {
-          cwd: "/tmp",
-          limiter: new ConcurrencyLimiter(4),
-          runAgent: echo,
-        },
-      ),
-    ).rejects.toThrow(/dynamic code|constructor/i);
-    await expect(
-      runWorkflow(
-        `${META}const { getOwnPropertyDescriptor: gopd, getPrototypeOf: gp } = Object;\ngopd(gp(log), 'constructor').value('return process')();\nreturn await agent('x');`,
-        {
-          cwd: "/tmp",
-          limiter: new ConcurrencyLimiter(4),
-          runAgent: echo,
-        },
-      ),
-    ).rejects.toThrow(/dynamic code|constructor/i);
+  it("allows idiomatic computed member access (obj[key], arr[i], { [k]: v })", async () => {
+    // The node:vm is explicitly not a security boundary (workflow subagents run
+    // with full tools), so the former "dynamic code / constructor escape"
+    // hardening was dropped. Its unavoidable side effect was banning all computed
+    // access with a non-literal key, which broke ordinary data-shaping scripts
+    // that models reach for constantly. Those must now parse and run.
+    const result = await runWorkflow(
+      `${META}const files = ['a', 'b'];\n` +
+        `const out = {};\n` +
+        `for (let i = 0; i < files.length; i++) {\n` +
+        `  const r = await agent('x:' + files[i], { label: 'a' + i });\n` +
+        `  out[files[i]] = r;\n` +
+        `}\n` +
+        `const dyn = { [files[0]]: out[files[0]] };\n` +
+        `return { out, dyn, first: out[files[0]] };`,
+      { cwd: "/tmp", limiter: new ConcurrencyLimiter(4), runAgent: echo },
+    );
+    expect(result.agentCount).toBe(2);
+    expect(result.result).toEqual({
+      out: { a: "x:a", b: "x:b" },
+      dyn: { a: "x:a" },
+      first: "x:a",
+    });
+  });
+
+  it("still rejects nondeterminism reached through computed/aliased forms", () => {
+    // Determinism stays enforced even though escape hardening is gone.
+    expect(() => parseWorkflowScript(`${META}const r = Math.random();`)).toThrow(/deterministic/);
+    expect(() => parseWorkflowScript(`${META}const d = new Date();`)).toThrow(/deterministic|Date/i);
   });
 
   it("waits for started but unawaited agent calls before failing", async () => {
