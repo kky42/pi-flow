@@ -29,6 +29,7 @@ export interface WorkflowAgentSnapshot {
   index: number;
   label: string;
   phase?: string;
+  subagentType?: string;
   status: "running" | "done" | "error";
 }
 
@@ -49,6 +50,8 @@ export interface WorkflowToolDetails {
   cachedAgentCount?: number;
   result?: unknown;
   error?: string;
+  /** Monotonic spinner frame, advanced by the runtime heartbeat while agents run. */
+  frame?: number;
 }
 
 export interface SubagentUsage {

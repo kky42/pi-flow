@@ -690,7 +690,7 @@ describe("workflow tool rendering", () => {
       agentCount: 3,
       phases: ["scan"],
       agents: [
-        { index: 1, label: "alpha", status: "running" },
+        { index: 1, label: "alpha", subagentType: "explorer", status: "running" },
         { index: 2, label: "beta", phase: "scan", status: "done" },
         { index: 3, label: "gamma", status: "error" },
       ],
@@ -703,10 +703,10 @@ describe("workflow tool rendering", () => {
     expect(text).toContain("1 failed");
     // scan phase is complete (beta done) -> ✓ header; unphased bucket still running.
     expect(text).toContain("✓ scan 1/1");
-    expect(text).toContain("#2 ✓ beta");
+    expect(text).toContain("✓ Agent(agent, beta, #2)");
     expect(text).toContain("▶ unphased 0/2 · 1 running · 1 failed");
-    expect(text).toContain("#1 ● alpha");
-    expect(text).toContain("#3 ✗ gamma");
+    expect(text).toContain("Agent(explorer, alpha, #1)");
+    expect(text).toContain("✗ Agent(agent, gamma, #3)");
     // declared phase renders before the unphased bucket.
     expect(text.indexOf("scan")).toBeLessThan(text.indexOf("unphased"));
   });
@@ -742,10 +742,51 @@ describe("workflow tool rendering", () => {
       logs: [],
     };
     const text = renderToText(tool.renderResult({ content: [{ type: "text", text: "x" }], details }, {}, theme));
-    expect(text).toContain("• alpha");
-    expect(text).toContain("✓ beta");
+    expect(text).toContain("Agent(agent, alpha, #1)");
+    expect(text).toContain("✓ Agent(agent, beta, #2)");
     expect(text).not.toContain("unphased");
-    expect(text).not.toContain("#1");
+  });
+
+  it("renders the over-cap flat list with the hidden marker after the visible rows", () => {
+    const theme = makeMockTheme();
+    const details: WorkflowToolDetails = {
+      name: "flat",
+      status: "running",
+      agentCount: 8,
+      phases: [],
+      agents: Array.from({ length: 8 }, (_, i) => ({
+        index: i + 1,
+        label: `a${i + 1}`,
+        status: "running" as const,
+      })),
+      logs: [],
+    };
+    const text = renderToText(tool.renderResult({ content: [{ type: "text", text: "x" }], details }, {}, theme));
+    // Earliest agents are shown; the "not shown" marker stands for the later ones
+    // and must come after the visible rows.
+    expect(text).toContain("Agent(agent, a1, #1)");
+    expect(text).toContain("... 2 agent(s) not shown");
+    expect(text.indexOf("#1")).toBeLessThan(text.indexOf("not shown"));
+    expect(text).not.toContain("#8");
+  });
+
+  it("advances the spinner glyph from the snapshot frame counter", () => {
+    const theme = makeMockTheme();
+    const make = (frame: number): WorkflowToolDetails => ({
+      name: "spin",
+      status: "running",
+      agentCount: 1,
+      phases: [],
+      frame,
+      agents: [{ index: 1, label: "alpha", status: "running" }],
+      logs: [],
+    });
+    // frame 0 -> first braille glyph, frame 1 -> second: proves the runtime
+    // heartbeat's frame counter drives the animation, with no UI-side timer.
+    const f0 = renderToText(tool.renderResult({ content: [{ type: "text", text: "x" }], details: make(0) }, {}, theme));
+    const f1 = renderToText(tool.renderResult({ content: [{ type: "text", text: "x" }], details: make(1) }, {}, theme));
+    expect(f0).toContain("⠋ Agent(agent, alpha, #1)");
+    expect(f1).toContain("⠙ Agent(agent, alpha, #1)");
   });
 
   it("groups multi-phase (loop-style) waves in declaration order and caps per phase", () => {
@@ -774,6 +815,31 @@ describe("workflow tool rendering", () => {
     expect(text).toContain("▶ loop2:opt 0/8 · 8 running");
     expect(text).toContain("... 2 more");
     expect(text.indexOf("loop1:opt")).toBeLessThan(text.indexOf("loop2:opt"));
+  });
+
+  it("shows the earliest agents in an over-cap running wave and hides the rest", () => {
+    const theme = makeMockTheme();
+    // 12 concurrent agents (the screenshot scenario): the 6-row window must show
+    // the earliest indices #1..#6 with "... 6 more" for #7..#12 — not the newest.
+    const details: WorkflowToolDetails = {
+      name: "ceiling_opt",
+      status: "running",
+      agentCount: 12,
+      phases: ["ceiling optimization workers"],
+      agents: Array.from({ length: 12 }, (_, i) => ({
+        index: i + 1,
+        label: `t${i + 1}`,
+        phase: "ceiling optimization workers",
+        status: "running" as const,
+      })),
+      logs: [],
+    };
+    const text = renderToText(tool.renderResult({ content: [{ type: "text", text: "x" }], details }, {}, theme));
+    expect(text).toContain("Agent(agent, t1, #1)");
+    expect(text).toContain("Agent(agent, t6, #6)");
+    expect(text).toContain("... 6 more");
+    expect(text).not.toContain("#7");
+    expect(text).not.toContain("#12");
   });
 
   it("renders a completed snapshot and surfaces a failure message", () => {

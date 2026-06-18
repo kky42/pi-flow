@@ -439,6 +439,20 @@ export function createWorkflowTool(
       };
       const emit = () => onUpdate?.(workflowResult(`Workflow "${metaName}" running.`, cloneSnapshot(snapshot)));
 
+      // Spinner animation is driven here, by the runtime, not by a UI-render
+      // timer: while any agent is running we advance a frame counter and re-emit
+      // so the live row redraws. The interval's lifecycle is bound to this
+      // execute() call (cleared in the finally below), so it cannot outlive the
+      // workflow or a torn-down tool row — and renderResult stays a pure function
+      // of the snapshot, which also keeps non-live paths (HTML export) timer-free.
+      const heartbeat = setInterval(() => {
+        if (snapshot.status === "running" && snapshot.agents.some((agent) => agent.status === "running")) {
+          snapshot.frame = (snapshot.frame ?? 0) + 1;
+          emit();
+        }
+      }, SPINNER_INTERVAL_MS);
+      (heartbeat as { unref?: () => void }).unref?.();
+
       try {
         const runResult = await runWorkflow(script, {
           args: params.args,
@@ -459,7 +473,7 @@ export function createWorkflowTool(
             emit();
           },
           onAgentStart: (event) => {
-            snapshot.agents.push({ index: event.index, label: event.label, phase: event.phase, status: event.cached ? "done" : "running" });
+            snapshot.agents.push({ index: event.index, label: event.label, phase: event.phase, subagentType: event.subagentType, status: event.cached ? "done" : "running" });
             snapshot.agentCount = snapshot.agents.length;
             if (event.cached) {
               snapshot.cachedAgentCount = (snapshot.cachedAgentCount ?? 0) + 1;
@@ -513,6 +527,8 @@ export function createWorkflowTool(
           `Workflow "${metaName}" ${aborted ? "aborted" : "failed"}: ${message}${formatRecentLogs(snapshot.logs)}`,
           cloneSnapshot(snapshot),
         );
+      } finally {
+        clearInterval(heartbeat);
       }
     },
     renderCall(args, theme, context) {
@@ -523,22 +539,36 @@ export function createWorkflowTool(
       return new Text(`${theme.bold("Workflow")}${name}`, 0, 0);
     },
     renderResult(result, _options, theme) {
+      // Pure function of the snapshot: the spinner frame is carried on the
+      // snapshot itself and advanced by the runtime heartbeat in execute(), so
+      // there is no UI-side timer to leak when a row is torn down or rendered in
+      // a non-live context (e.g. HTML export).
       const details = result.details as WorkflowToolDetails;
-      return renderWorkflowSnapshot(details, theme);
+      return renderWorkflowSnapshot(details, theme, details.frame ?? 0);
     },
   });
 }
 
-function formatAgentStatus(agent: WorkflowAgentSnapshot): string {
-  const mark = agent.status === "done" ? "✓" : agent.status === "error" ? "✗" : "•";
-  const phase = agent.phase ? `${agent.phase} / ` : "";
-  return `${mark} ${phase}${agent.label}`;
+// Braille spinner matching pi's working indicator; advanced by the runtime
+// heartbeat in execute() via the snapshot's frame counter.
+const SPINNER_FRAMES = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
+const SPINNER_INTERVAL_MS = 80;
+
+// Colored leading marker: animated accent spinner while running, green ✓ on
+// success, red ✗ on failure.
+function agentMarker(agent: WorkflowAgentSnapshot, theme: Theme, frame: number): string {
+  if (agent.status === "done") return theme.fg("success", "✓");
+  if (agent.status === "error") return theme.fg("error", "✗");
+  return theme.fg("accent", SPINNER_FRAMES[frame % SPINNER_FRAMES.length]);
 }
 
-function agentIcon(status: WorkflowAgentSnapshot["status"]): string {
-  if (status === "done") return "✓";
-  if (status === "error") return "✗";
-  return "●";
+// `<marker> Agent(<type>, <label>, #<index>)`. The marker is colored by status;
+// the body stays muted (error rows go red so failures read at a glance).
+function renderAgentRow(agent: WorkflowAgentSnapshot, theme: Theme, frame: number, indent: string): Text {
+  const type = agent.subagentType ?? "agent";
+  const body = `Agent(${type}, ${agent.label}, #${agent.index})`;
+  const bodyColor = agent.status === "error" ? "error" : "muted";
+  return new Text(`${indent}${agentMarker(agent, theme, frame)} ${theme.fg(bodyColor, body)}`, 0, 0);
 }
 
 function agentRenderPriority(agent: WorkflowAgentSnapshot): number {
@@ -547,10 +577,16 @@ function agentRenderPriority(agent: WorkflowAgentSnapshot): number {
   return 2;
 }
 
+// Pick which agents to show when a phase exceeds `max` rows. Errors first, then
+// running, then done (surface failures and active work over finished agents);
+// within a tier keep the EARLIEST-started agents so the visible window reads
+// #1..#max with `... N more` standing for the later, hidden ones. (A descending
+// tie-break here would keep the highest indices and make the list look like it
+// starts mid-way.) The final ascending sort restores numeric order across tiers.
 function selectAgentsForRender(agents: WorkflowAgentSnapshot[], max = 6): WorkflowAgentSnapshot[] {
   return agents
     .map((agent, index) => ({ agent, index }))
-    .sort((a, b) => agentRenderPriority(a.agent) - agentRenderPriority(b.agent) || b.index - a.index)
+    .sort((a, b) => agentRenderPriority(a.agent) - agentRenderPriority(b.agent) || a.index - b.index)
     .slice(0, max)
     .sort((a, b) => a.index - b.index)
     .map((item) => item.agent);
@@ -579,7 +615,7 @@ function orderedPhases(details: WorkflowToolDetails): (string | undefined)[] {
   return order;
 }
 
-function renderPhaseTree(container: Container, details: WorkflowToolDetails, theme: Theme): void {
+function renderPhaseTree(container: Container, details: WorkflowToolDetails, theme: Theme, frame: number): void {
   for (const phase of orderedPhases(details)) {
     const agents = details.agents.filter((agent) => agent.phase === phase);
     const pDone = agents.filter((agent) => agent.status === "done").length;
@@ -598,10 +634,7 @@ function renderPhaseTree(container: Container, details: WorkflowToolDetails, the
     );
     const shown = selectAgentsForRender(agents);
     for (const agent of shown) {
-      const color = agent.status === "error" ? "error" : "muted";
-      container.addChild(
-        new Text(`    ${theme.fg(color, `#${agent.index} ${agentIcon(agent.status)} ${agent.label}`)}`, 0, 0),
-      );
+      container.addChild(renderAgentRow(agent, theme, frame, "    "));
     }
     const hidden = agents.length - shown.length;
     if (hidden > 0) {
@@ -610,19 +643,21 @@ function renderPhaseTree(container: Container, details: WorkflowToolDetails, the
   }
 }
 
-function renderFlatAgents(container: Container, details: WorkflowToolDetails, theme: Theme): void {
+function renderFlatAgents(container: Container, details: WorkflowToolDetails, theme: Theme, frame: number): void {
   const renderedAgents = selectAgentsForRender(details.agents);
+  for (const agent of renderedAgents) {
+    container.addChild(renderAgentRow(agent, theme, frame, "  "));
+  }
+  // selectAgentsForRender keeps the earliest agents, so the hidden ones are the
+  // later indices — the "not shown" marker belongs after the visible rows (as in
+  // renderPhaseTree), standing for what continues below.
   const hiddenAgents = details.agents.length - renderedAgents.length;
   if (hiddenAgents > 0) {
     container.addChild(new Text(`  ${theme.fg("muted", `... ${hiddenAgents} agent(s) not shown`)}`, 0, 0));
   }
-  for (const agent of renderedAgents) {
-    const color = agent.status === "error" ? "error" : "muted";
-    container.addChild(new Text(`  ${theme.fg(color, formatAgentStatus(agent))}`, 0, 0));
-  }
 }
 
-function renderWorkflowSnapshot(details: WorkflowToolDetails, theme: Theme): Container {
+function renderWorkflowSnapshot(details: WorkflowToolDetails, theme: Theme, frame: number): Container {
   const container = new Container();
   const done = details.agents.filter((agent) => agent.status === "done").length;
   const failed = details.agents.filter((agent) => agent.status === "error").length;
@@ -638,9 +673,9 @@ function renderWorkflowSnapshot(details: WorkflowToolDetails, theme: Theme): Con
   // Phase-grouped tree when the workflow uses phase() (including before the first
   // agent in a phase starts); otherwise keep the flat list.
   if (details.phases.length > 0 || details.agents.some((agent) => agent.phase)) {
-    renderPhaseTree(container, details, theme);
+    renderPhaseTree(container, details, theme, frame);
   } else {
-    renderFlatAgents(container, details, theme);
+    renderFlatAgents(container, details, theme, frame);
   }
 
   for (const line of details.logs.slice(-3)) {
