@@ -60,6 +60,12 @@ describe("parseWorkflowScript", () => {
     expect(() => parseWorkflowScript(`${META}const d = new Date();`)).toThrow(/deterministic/);
     expect(() => parseWorkflowScript(`${META}const now = Date.now; now();`)).toThrow(/deterministic|Date/i);
     expect(() => parseWorkflowScript(`${META}const D = Date; new D();`)).toThrow(/deterministic|Date/i);
+    expect(() => parseWorkflowScript(`${META}const { random } = Math; random();`)).toThrow(/deterministic|Math\.random/i);
+    expect(() => parseWorkflowScript(`${META}const M = Math; M.random();`)).toThrow(/deterministic|Math\.random/i);
+  });
+
+  it("allows deterministic Math aliases", () => {
+    expect(() => parseWorkflowScript(`${META}const M = Math; const x = M.max(1, 2); return await agent(String(x));`)).not.toThrow();
   });
 
   it("allows Date as a deterministic data field name", () => {
@@ -341,6 +347,32 @@ describe("runWorkflow", () => {
         runAgent: echo,
       }),
     ).rejects.toThrow(/JSON-serializable/i);
+  });
+
+  it("rejects class instances in workflow results instead of flattening them", async () => {
+    await expect(
+      runWorkflow(`${META}await agent('x', { label: 'a' });\nclass Box { constructor() { this.value = 1; } }\nreturn new Box();`, {
+        cwd: "/tmp",
+        limiter: new ConcurrencyLimiter(1),
+        runAgent: echo,
+      }),
+    ).rejects.toThrow(/non-plain object Box/i);
+  });
+
+  it("rejects class instances returned by subagents instead of flattening them", async () => {
+    class Box {
+      value = 1;
+    }
+    const logs: string[] = [];
+    const result = await runWorkflow(`${META}return await agent('x', { label: 'a' });`, {
+      cwd: "/tmp",
+      limiter: new ConcurrencyLimiter(1),
+      runAgent: async () => new Box(),
+      onLog: (message) => logs.push(message),
+    });
+
+    expect(result.result).toBeNull();
+    expect(logs.some((line) => /non-plain object Box/i.test(line))).toBe(true);
   });
 
   it("normalizes JSON-like workflow results to canonical JSON", async () => {

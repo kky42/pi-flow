@@ -75,7 +75,7 @@ Saved workflows live in:
 
 Each file starts with `export const meta = { name, description }`; put both the summary and “when to use” guidance in `description`. The model sees a compact roster of saved workflow names/descriptions and can call `workflow({ name, args })` when one matches the user's natural-language request. Project workflows override global workflows with the same `meta.name`.
 
-Inline workflow runs are auto-persisted under the current session's workflow directory when the session is persisted. The tool result includes `scriptPath` and `runId`, so an agent can edit that file and rerun with `workflow({ scriptPath, resumeFromRunId })`. Resume reuses cached `agent()` results for the longest unchanged prefix; the first edited/new `agent()` call and everything after it runs live.
+Inline workflow runs are auto-persisted under the current session's workflow directory when the session is persisted. Persisted inline runs include `scriptPath` and `runId`, so an agent can edit that file and rerun with `workflow({ scriptPath, resumeFromRunId })`; in-memory runs may only include `runId`. Resume reuses cached `agent()` results for the longest unchanged prefix; the first edited/new `agent()` call and everything after it runs live.
 
 The script runs in an isolated worker/VM so pi can detect stalls and abort unresponsive scripts, but it is **not a security sandbox**. Initial synchronous execution is bounded (5s by default), and post-`await` event-loop stalls are caught by a heartbeat watchdog. Treat saved workflows like trusted extensions, and treat inline workflows as model-written code executed in-process. The workflow globals are:
 
@@ -104,11 +104,11 @@ return await agent(`Summarize these findings:\n${findings.join("\n\n")}`, { labe
 
 Key properties:
 
-- **Reusable.** Save trusted workflow scripts on disk and invoke them by `meta.name`; ad-hoc inline scripts still work and return a session `scriptPath`.
+- **Reusable.** Save trusted workflow scripts on disk and invoke them by `meta.name`; ad-hoc inline scripts still work and return a session `scriptPath` when the session is persisted.
 - **Trust-gated.** Project-local `.pi/workflows` are ignored unless the project is trusted, and saved workflow files are re-parsed and path-checked before execution.
 - **Real subagents.** Each `agent()` runs through the same spawn path as the `Agent` tool, so `subagent_type` gives it that profile's model, thinking level, tools, and system prompt.
 - **Structured output.** Pass a JSON Schema as `opts.schema` and `agent()` returns the first validated object instead of text — ideal for composing results in `parallel`/`pipeline`. The injected `structured_output` tool terminates the child turn; duplicate successful calls are ignored.
-- **Cooperative determinism.** Direct `Date.now()`, `Math.random()`, and `new Date()` uses are rejected to keep normal model-written scripts replayable. This is a lint-style check for trusted code, not a sandbox against malicious JavaScript.
+- **Cooperative determinism.** Date APIs and `Math.random()` uses, including simple aliases/destructuring, are rejected to keep normal model-written scripts replayable. This is a lint-style check for trusted code, not a sandbox against malicious JavaScript.
 - **Resumable.** Use the returned `runId` with an edited `scriptPath` to reuse cached subagent outputs for the unchanged prefix of `agent()` calls.
 - **Bounded.** Workflow fan-out shares the same global concurrency cap as the `Agent` tool; excess agents queue and drain as slots free. A workflow also has a hard cap on total `agent()` calls, retained logs, and the orchestration worker heap (512MB old generation by default; this does not cap subagent/tool subprocess memory).
 - **Foreground.** A workflow is a single blocking tool call. Subagents cannot launch workflows or other subagents.

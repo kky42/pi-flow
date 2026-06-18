@@ -247,7 +247,7 @@ const DISCOVERABILITY_PROMPT = [
 // clean FAIL on "model invoked the workflow tool" rather than a hang).
 const DEFAULT_PI_TIMEOUT_MS = 8 * 60 * 1000;
 
-function runPi({ model, thinking, cwd, sessionDir, sessionId, prompt, extension, timeoutMs = DEFAULT_PI_TIMEOUT_MS }) {
+function runPi({ model, thinking, agentDir, cwd, sessionDir, sessionId, prompt, extension, timeoutMs = DEFAULT_PI_TIMEOUT_MS }) {
   ensureDir(sessionDir);
   const promptPath = path.join(sessionDir, "prompt.md");
   writeFileSync(promptPath, `${prompt}\n`);
@@ -275,7 +275,11 @@ function runPi({ model, thinking, cwd, sessionDir, sessionId, prompt, extension,
   return new Promise((resolve) => {
     const out = createWriteStream(stdoutPath, { flags: "a" });
     const err = createWriteStream(stderrPath, { flags: "a" });
-    const child = spawn("pi", args, { cwd, stdio: ["ignore", "pipe", "pipe"], env: process.env });
+    const child = spawn("pi", args, {
+      cwd,
+      stdio: ["ignore", "pipe", "pipe"],
+      env: { ...process.env, PI_CODING_AGENT_DIR: agentDir },
+    });
     let timedOut = false;
     let killTimer;
     const timer = setTimeout(() => {
@@ -849,7 +853,7 @@ async function main() {
   ensureDir(options.sessionRoot);
   const fixture = createFixture(options.sessionRoot);
   const ctx = {
-    run: { model: options.model, thinking: options.thinking },
+    run: { model: options.model, thinking: options.thinking, agentDir: options.agentDir },
     sessionRoot: options.sessionRoot,
     agentDir: options.agentDir,
     fixture,

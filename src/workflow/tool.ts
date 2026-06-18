@@ -66,7 +66,7 @@ const workflowToolParameters = Type.Object({
   resumeFromRunId: Type.Optional(
     Type.String({
       description:
-        "Optional previous workflow run id to resume from. Cached agent results are reused for the longest unchanged prefix of agent() calls.",
+        "Optional previous workflow run id to resume from. Only valid when `scriptPath` is the workflow source. Cached agent results are reused for the longest unchanged prefix of agent() calls.",
     }),
   ),
 });
@@ -253,6 +253,22 @@ export function createWorkflowTool(
         });
       }
 
+      const resumeFromRunId = typeof params.resumeFromRunId === "string" && params.resumeFromRunId.trim()
+        ? params.resumeFromRunId.trim()
+        : undefined;
+      if (resumeFromRunId && source.source !== "path") {
+        const message = "Cannot resume workflow: resumeFromRunId can only be used with scriptPath.";
+        return workflowError(message, {
+          name: metaName,
+          error: message,
+          logs: source.warnings,
+          source: source.source,
+          sourcePath: source.sourcePath,
+          scriptPath: undefined,
+          resumeFromRunId,
+        });
+      }
+
       const sessionWorkflowDir = getSessionWorkflowDir(ctx);
       const identity = createWorkflowRunIdentity(script, params.args);
       let scriptPath = source.sourcePath;
@@ -278,7 +294,7 @@ export function createWorkflowTool(
       }
 
       let resumeAgentResults: WorkflowCachedAgentResult[] | undefined = undefined;
-      if (params.resumeFromRunId) {
+      if (resumeFromRunId) {
         if (!sessionWorkflowDir) {
           const message = "Cannot resume workflow: current session has no persisted workflow state.";
           return workflowError(message, {
@@ -289,12 +305,12 @@ export function createWorkflowTool(
             sourcePath: source.sourcePath,
             scriptPath,
             runId: identity.runId,
-            resumeFromRunId: params.resumeFromRunId,
+            resumeFromRunId,
           });
         }
         let journal;
         try {
-          journal = await loadWorkflowJournal(sessionWorkflowDir, params.resumeFromRunId);
+          journal = await loadWorkflowJournal(sessionWorkflowDir, resumeFromRunId);
         } catch (error) {
           const message = `Cannot resume workflow: ${error instanceof Error ? error.message : String(error)}`;
           return workflowError(message, {
@@ -305,11 +321,11 @@ export function createWorkflowTool(
             sourcePath: source.sourcePath,
             scriptPath,
             runId: identity.runId,
-            resumeFromRunId: params.resumeFromRunId,
+            resumeFromRunId,
           });
         }
         if (!journal) {
-          const message = `Cannot resume workflow: run journal not found for ${params.resumeFromRunId}.`;
+          const message = `Cannot resume workflow: run journal not found for ${resumeFromRunId}.`;
           return workflowError(message, {
             name: metaName,
             error: message,
@@ -318,7 +334,7 @@ export function createWorkflowTool(
             sourcePath: source.sourcePath,
             scriptPath,
             runId: identity.runId,
-            resumeFromRunId: params.resumeFromRunId,
+            resumeFromRunId,
           });
         }
         resumeAgentResults = journal.agentResults;
@@ -333,7 +349,7 @@ export function createWorkflowTool(
             name: metaName,
             source: source.source,
             scriptPath,
-            resumeFromRunId: params.resumeFromRunId,
+            resumeFromRunId,
           });
         } catch (error) {
           const message = `Workflow journal setup failed: ${error instanceof Error ? error.message : String(error)}`;
@@ -345,7 +361,7 @@ export function createWorkflowTool(
             sourcePath: source.sourcePath,
             scriptPath,
             runId: identity.runId,
-            resumeFromRunId: params.resumeFromRunId,
+            resumeFromRunId,
           });
         }
       }
@@ -418,7 +434,7 @@ export function createWorkflowTool(
         scriptPath,
         runId: identity.runId,
         journalPath: journalWriter?.path,
-        resumeFromRunId: params.resumeFromRunId,
+        resumeFromRunId,
         cachedAgentCount: 0,
       };
       const emit = () => onUpdate?.(workflowResult(`Workflow "${metaName}" running.`, cloneSnapshot(snapshot)));

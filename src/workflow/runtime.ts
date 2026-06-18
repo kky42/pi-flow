@@ -134,7 +134,7 @@ type ParentToWorkerMessage =
   | { type: "abort"; reason: string };
 
 const NONDETERMINISM_ERROR =
-  "Workflow scripts must be deterministic: Date.now()/Math.random()/new Date() are unavailable";
+  "Workflow scripts must be deterministic: Date APIs and Math.random() (including simple aliases) are unavailable";
 
 const DEFAULT_SUBAGENT_TYPE = "general-purpose";
 
@@ -608,12 +608,20 @@ function propertyKey(node: AnyNode, path: string): string {
   throw new Error(`unsupported key type in ${path}: ${node.type}`);
 }
 
-function assertDeterministicAst(node: AnyNode): void {
-  if (isNondeterministicReference(node)) {
+interface DeterminismScanState {
+  mathAliases: Set<string>;
+}
+
+function assertDeterministicAst(
+  node: AnyNode,
+  state: DeterminismScanState = { mathAliases: new Set(["Math"]) },
+): void {
+  if (isNondeterministicReference(node, state)) {
     throw new Error(NONDETERMINISM_ERROR);
   }
+  recordDeterminismAliases(node, state);
   for (const child of astChildren(node)) {
-    assertDeterministicAst(child);
+    assertDeterministicAst(child, state);
   }
 }
 
@@ -635,12 +643,19 @@ function isAstNode(value: unknown): value is AnyNode {
 
 // Determinism is the only invariant this scan enforces. Resume-by-replay assumes
 // a cooperative script reproduces the same agent() calls from the same inputs,
-// so direct references to the two common host sources of nondeterminism are
-// rejected: `new Date()`, `Date()`, `Date.now`, simple `Date` aliases, and
-// static `Math.random`. This is not a security sandbox; workflows are trusted
-// code and clever code can bypass a lint-style AST scan.
-function isNondeterministicReference(node: AnyNode): boolean {
-  if (isStaticMathRandomReference(node)) {
+// so references to the two common host sources of nondeterminism are rejected:
+// Date APIs (`new Date()`, `Date()`, `Date.now`, members, and simple aliases)
+// and `Math.random` (including static/computed member access plus simple object
+// aliases and destructuring). This is not a security sandbox; workflows are
+// trusted code and clever code can bypass a lint-style AST scan.
+function isNondeterministicReference(node: AnyNode, state: DeterminismScanState): boolean {
+  if (isStaticMathRandomReference(node, state)) {
+    return true;
+  }
+  if (node.type === "VariableDeclarator" && isMathAliasSource(node.init, state) && patternReadsKey(node.id, "random")) {
+    return true;
+  }
+  if (node.type === "AssignmentExpression" && isMathAliasSource(node.right, state) && patternReadsKey(node.left, "random")) {
     return true;
   }
   if (node.type === "NewExpression" && node.callee?.type === "Identifier" && node.callee.name === "Date") {
@@ -661,13 +676,43 @@ function isNondeterministicReference(node: AnyNode): boolean {
   return false;
 }
 
-function isStaticMathRandomReference(node: AnyNode): boolean {
+function recordDeterminismAliases(node: AnyNode, state: DeterminismScanState): void {
+  if (node.type === "VariableDeclarator" && node.id?.type === "Identifier" && isMathAliasSource(node.init, state)) {
+    state.mathAliases.add(node.id.name);
+  }
+  if (node.type === "AssignmentExpression" && node.left?.type === "Identifier" && isMathAliasSource(node.right, state)) {
+    state.mathAliases.add(node.left.name);
+  }
+}
+
+function isStaticMathRandomReference(node: AnyNode, state: DeterminismScanState): boolean {
   return (
     node.type === "MemberExpression" &&
     node.object?.type === "Identifier" &&
-    node.object.name === "Math" &&
+    state.mathAliases.has(node.object.name) &&
     propertyNameOf(node) === "random"
   );
+}
+
+function isMathAliasSource(node: AnyNode | undefined, state: DeterminismScanState): boolean {
+  return node?.type === "Identifier" && state.mathAliases.has(node.name);
+}
+
+function patternReadsKey(node: AnyNode | undefined, key: string): boolean {
+  if (node?.type !== "ObjectPattern") {
+    return false;
+  }
+  for (const prop of node.properties as AnyNode[]) {
+    if (prop.type === "Property" && propertyNameOfPatternProperty(prop) === key) {
+      return true;
+    }
+  }
+  return false;
+}
+
+function propertyNameOfPatternProperty(prop: AnyNode): string | undefined {
+  if (!prop.computed && prop.key?.type === "Identifier") return prop.key.name;
+  return staticStringOf(prop.key);
 }
 
 function propertyNameOf(node: AnyNode): string | undefined {
@@ -827,7 +872,14 @@ function normalizeJsonValue(
 
 function isPlainJsonObject(value: object): boolean {
   const proto = Object.getPrototypeOf(value);
-  return proto === null || Object.prototype.toString.call(value) === "[object Object]";
+  return proto === null || isObjectPrototype(proto);
+}
+
+function isObjectPrototype(value: object): boolean {
+  if (value === Object.prototype) return true;
+  const parent = Object.getPrototypeOf(value);
+  const constructor = (value as { constructor?: unknown }).constructor;
+  return parent === null && typeof constructor === "function" && constructor.name === "Object";
 }
 
 const WORKFLOW_WORKER_SOURCE = String.raw`
@@ -1117,7 +1169,14 @@ function normalizeJsonValue(value, path, seen, insideArray) {
 
 function isPlainJsonObject(value) {
   const proto = Object.getPrototypeOf(value);
-  return proto === null || Object.prototype.toString.call(value) === "[object Object]";
+  return proto === null || isObjectPrototype(proto);
+}
+
+function isObjectPrototype(value) {
+  if (value === Object.prototype) return true;
+  const parent = Object.getPrototypeOf(value);
+  const constructor = value.constructor;
+  return parent === null && typeof constructor === "function" && constructor.name === "Object";
 }
 
 (async () => {

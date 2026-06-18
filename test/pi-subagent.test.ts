@@ -1524,6 +1524,67 @@ This should not be advertised or launched.`);
       disposeSession(session);
     });
 
+    it("rejects missing or ambiguous workflow sources", async () => {
+      const { session, model, modelRegistry } = await createSession();
+      const tool = session.getToolDefinition("workflow") as any;
+      const context = makeExecutionContext({ hasUI: false, model, modelRegistry });
+      const script = `export const meta = { name: 'ambiguous', description: 'Ambiguous source test' };\nreturn await agent('x');`;
+
+      const missing = await tool.execute("wf-no-source", {}, undefined, undefined, context);
+      expect(missing.details.status).toBe("error");
+      expect(missing.content[0].text).toContain("exactly one non-empty source");
+
+      const multiple = await tool.execute(
+        "wf-multiple-sources",
+        { script, name: "ambiguous" },
+        undefined,
+        undefined,
+        context,
+      );
+      expect(multiple.details.status).toBe("error");
+      expect(multiple.content[0].text).toContain("exactly one non-empty source");
+
+      disposeSession(session);
+    });
+
+    it("rejects resumeFromRunId unless scriptPath is the workflow source", async () => {
+      mkdirSync(join(agentDir, "workflows"), { recursive: true });
+      writeFileSync(
+        join(agentDir, "workflows", "saved-review.js"),
+        `export const meta = { name: 'saved-review', description: 'Review through a saved workflow' };\nreturn await agent('saved workflow task', { label: 'saved' });`,
+      );
+
+      const { session, model, modelRegistry } = await createSession();
+      const tool = session.getToolDefinition("workflow") as any;
+      const context = makeExecutionContext({ hasUI: false, model, modelRegistry, persistedSession: true });
+      const script = `export const meta = { name: 'resume_inline', description: 'Resume misuse test' };\nreturn await agent('x', { label: 'x' });`;
+
+      const inline = await tool.execute(
+        "wf-resume-inline",
+        { script, resumeFromRunId: "wf_previous" },
+        undefined,
+        undefined,
+        context,
+      );
+      expect(inline.details.status).toBe("error");
+      expect(inline.details.source).toBe("inline");
+      expect(inline.details.scriptPath).toBeUndefined();
+      expect(inline.content[0].text).toContain("resumeFromRunId can only be used with scriptPath");
+
+      const saved = await tool.execute(
+        "wf-resume-saved",
+        { name: "saved-review", resumeFromRunId: "wf_previous" },
+        undefined,
+        undefined,
+        context,
+      );
+      expect(saved.details.status).toBe("error");
+      expect(saved.details.source).toBe("saved");
+      expect(saved.content[0].text).toContain("resumeFromRunId can only be used with scriptPath");
+
+      disposeSession(session);
+    });
+
     it("persists inline scripts and resumes an edited scriptPath from a previous run id", async () => {
       const { session, registration, model, modelRegistry } = await createSession();
       const tool = session.getToolDefinition("workflow") as any;
