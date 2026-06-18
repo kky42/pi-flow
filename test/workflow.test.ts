@@ -682,7 +682,7 @@ describe("workflow tool rendering", () => {
     expect(after.trim()).toBe("");
   });
 
-  it("renders a running snapshot with per-agent status marks and counts", () => {
+  it("renders a phase-grouped tree with per-agent marks and counts", () => {
     const theme = makeMockTheme();
     const details: WorkflowToolDetails = {
       name: "audit",
@@ -701,9 +701,79 @@ describe("workflow tool rendering", () => {
     expect(text).toContain("running");
     expect(text).toContain("1/3 done");
     expect(text).toContain("1 failed");
+    // scan phase is complete (beta done) -> ✓ header; unphased bucket still running.
+    expect(text).toContain("✓ scan 1/1");
+    expect(text).toContain("#2 ✓ beta");
+    expect(text).toContain("▶ unphased 0/2 · 1 running · 1 failed");
+    expect(text).toContain("#1 ● alpha");
+    expect(text).toContain("#3 ✗ gamma");
+    // declared phase renders before the unphased bucket.
+    expect(text.indexOf("scan")).toBeLessThan(text.indexOf("unphased"));
+  });
+
+  it("shows an entered phase header before its first agent starts", () => {
+    const theme = makeMockTheme();
+    // phase('scan') has fired but no agent in it has launched yet.
+    const details: WorkflowToolDetails = {
+      name: "setup",
+      status: "running",
+      agentCount: 0,
+      phases: ["scan"],
+      currentPhase: "scan",
+      agents: [],
+      logs: [],
+    };
+    const text = renderToText(tool.renderResult({ content: [{ type: "text", text: "x" }], details }, {}, theme));
+    // Active phase is visible and marked current, not collapsed to the flat list.
+    expect(text).toContain("▶ scan 0/0");
+  });
+
+  it("keeps a flat list when no agent has a phase", () => {
+    const theme = makeMockTheme();
+    const details: WorkflowToolDetails = {
+      name: "flat",
+      status: "running",
+      agentCount: 2,
+      phases: [],
+      agents: [
+        { index: 1, label: "alpha", status: "running" },
+        { index: 2, label: "beta", status: "done" },
+      ],
+      logs: [],
+    };
+    const text = renderToText(tool.renderResult({ content: [{ type: "text", text: "x" }], details }, {}, theme));
     expect(text).toContain("• alpha");
-    expect(text).toContain("✓ scan / beta");
-    expect(text).toContain("✗ gamma");
+    expect(text).toContain("✓ beta");
+    expect(text).not.toContain("unphased");
+    expect(text).not.toContain("#1");
+  });
+
+  it("groups multi-phase (loop-style) waves in declaration order and caps per phase", () => {
+    const theme = makeMockTheme();
+    const agents = [
+      { index: 1, label: "t1", phase: "loop1:opt", status: "done" as const },
+      { index: 2, label: "t2", phase: "loop1:opt", status: "done" as const },
+      // loop2:opt has 8 agents -> per-phase cap of 6 plus a "... 2 more" line.
+      ...Array.from({ length: 8 }, (_, i) => ({
+        index: 3 + i,
+        label: `u${i + 1}`,
+        phase: "loop2:opt",
+        status: "running" as const,
+      })),
+    ];
+    const details: WorkflowToolDetails = {
+      name: "loop",
+      status: "running",
+      agentCount: agents.length,
+      phases: ["loop1:opt", "loop2:opt"],
+      agents,
+      logs: [],
+    };
+    const text = renderToText(tool.renderResult({ content: [{ type: "text", text: "x" }], details }, {}, theme));
+    expect(text).toContain("✓ loop1:opt 2/2");
+    expect(text).toContain("▶ loop2:opt 0/8 · 8 running");
+    expect(text).toContain("... 2 more");
+    expect(text.indexOf("loop1:opt")).toBeLessThan(text.indexOf("loop2:opt"));
   });
 
   it("renders a completed snapshot and surfaces a failure message", () => {

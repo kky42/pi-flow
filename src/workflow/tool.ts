@@ -455,6 +455,7 @@ export function createWorkflowTool(
             if (!snapshot.phases.includes(title)) {
               snapshot.phases.push(title);
             }
+            snapshot.currentPhase = title;
             emit();
           },
           onAgentStart: (event) => {
@@ -534,6 +535,12 @@ function formatAgentStatus(agent: WorkflowAgentSnapshot): string {
   return `${mark} ${phase}${agent.label}`;
 }
 
+function agentIcon(status: WorkflowAgentSnapshot["status"]): string {
+  if (status === "done") return "✓";
+  if (status === "error") return "✗";
+  return "●";
+}
+
 function agentRenderPriority(agent: WorkflowAgentSnapshot): number {
   if (agent.status === "error") return 0;
   if (agent.status === "running") return 1;
@@ -549,6 +556,72 @@ function selectAgentsForRender(agents: WorkflowAgentSnapshot[], max = 6): Workfl
     .map((item) => item.agent);
 }
 
+// Ordered list of phase groups: entered phases first, in entry order, then any
+// agent-only phases, then an `undefined` bucket for unphased agents. Entered
+// phases are kept even before their first agent starts so live phase() updates
+// stay visible. Layout inspired by Michaelliv/pi-dynamic-workflows.
+function orderedPhases(details: WorkflowToolDetails): (string | undefined)[] {
+  const seen = new Set<string>();
+  const order: (string | undefined)[] = [];
+  for (const phase of details.phases) {
+    if (!seen.has(phase)) {
+      seen.add(phase);
+      order.push(phase);
+    }
+  }
+  for (const agent of details.agents) {
+    if (agent.phase && !seen.has(agent.phase)) {
+      seen.add(agent.phase);
+      order.push(agent.phase);
+    }
+  }
+  if (details.agents.some((agent) => !agent.phase)) order.push(undefined);
+  return order;
+}
+
+function renderPhaseTree(container: Container, details: WorkflowToolDetails, theme: Theme): void {
+  for (const phase of orderedPhases(details)) {
+    const agents = details.agents.filter((agent) => agent.phase === phase);
+    const pDone = agents.filter((agent) => agent.status === "done").length;
+    const pErr = agents.filter((agent) => agent.status === "error").length;
+    const pRun = agents.filter((agent) => agent.status === "running").length;
+    const complete = agents.length > 0 && pDone + pErr === agents.length;
+    const isCurrent = phase !== undefined && details.currentPhase === phase;
+    const marker = complete ? "✓" : pRun > 0 || isCurrent ? "▶" : "·";
+    const extra = `${pRun ? ` · ${pRun} running` : ""}${pErr ? ` · ${pErr} failed` : ""}`;
+    container.addChild(
+      new Text(
+        `  ${theme.fg(pErr ? "error" : "muted", `${marker} ${phase ?? "unphased"} ${pDone}/${agents.length}${extra}`)}`,
+        0,
+        0,
+      ),
+    );
+    const shown = selectAgentsForRender(agents);
+    for (const agent of shown) {
+      const color = agent.status === "error" ? "error" : "muted";
+      container.addChild(
+        new Text(`    ${theme.fg(color, `#${agent.index} ${agentIcon(agent.status)} ${agent.label}`)}`, 0, 0),
+      );
+    }
+    const hidden = agents.length - shown.length;
+    if (hidden > 0) {
+      container.addChild(new Text(`    ${theme.fg("muted", `... ${hidden} more`)}`, 0, 0));
+    }
+  }
+}
+
+function renderFlatAgents(container: Container, details: WorkflowToolDetails, theme: Theme): void {
+  const renderedAgents = selectAgentsForRender(details.agents);
+  const hiddenAgents = details.agents.length - renderedAgents.length;
+  if (hiddenAgents > 0) {
+    container.addChild(new Text(`  ${theme.fg("muted", `... ${hiddenAgents} agent(s) not shown`)}`, 0, 0));
+  }
+  for (const agent of renderedAgents) {
+    const color = agent.status === "error" ? "error" : "muted";
+    container.addChild(new Text(`  ${theme.fg(color, formatAgentStatus(agent))}`, 0, 0));
+  }
+}
+
 function renderWorkflowSnapshot(details: WorkflowToolDetails, theme: Theme): Container {
   const container = new Container();
   const done = details.agents.filter((agent) => agent.status === "done").length;
@@ -562,14 +635,12 @@ function renderWorkflowSnapshot(details: WorkflowToolDetails, theme: Theme): Con
     ),
   );
 
-  const renderedAgents = selectAgentsForRender(details.agents);
-  const hiddenAgents = details.agents.length - renderedAgents.length;
-  if (hiddenAgents > 0) {
-    container.addChild(new Text(`  ${theme.fg("muted", `... ${hiddenAgents} agent(s) not shown`)}`, 0, 0));
-  }
-  for (const agent of renderedAgents) {
-    const color = agent.status === "error" ? "error" : "muted";
-    container.addChild(new Text(`  ${theme.fg(color, formatAgentStatus(agent))}`, 0, 0));
+  // Phase-grouped tree when the workflow uses phase() (including before the first
+  // agent in a phase starts); otherwise keep the flat list.
+  if (details.phases.length > 0 || details.agents.some((agent) => agent.phase)) {
+    renderPhaseTree(container, details, theme);
+  } else {
+    renderFlatAgents(container, details, theme);
   }
 
   for (const line of details.logs.slice(-3)) {

@@ -37,6 +37,7 @@ export interface WorkflowToolDetails {
   status: "running" | "completed" | "error" | "aborted";
   agentCount: number;
   phases: string[];
+  currentPhase?: string;
   agents: WorkflowAgentSnapshot[];
   logs: string[];
   source?: "inline" | "saved" | "path";
