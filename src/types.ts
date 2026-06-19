@@ -21,6 +21,13 @@ export interface SubagentExtensionOptions {
    */
   maxConcurrentSubagents?: number;
   /**
+   * Maximum wall-clock runtime for each launched subagent, in milliseconds.
+   * Defaults to a generous global guardrail. Set to 0 to disable. The limit is
+   * shared by direct `Agent` calls and workflow `agent()` calls, and can also
+   * be overridden with `--subagent-timeout-ms`.
+   */
+  subagentTimeoutMs?: number;
+  /**
    * Register the dynamic `workflow` tool alongside `Agent`. Defaults to true:
    * one product, two entry points. Set to false for a subagents-only surface.
    */

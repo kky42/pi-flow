@@ -241,7 +241,7 @@ External CLI backends intentionally run in no-approval/yolo mode:
 
 Only use external backends in trusted repositories.
 
-## Concurrency and status
+## Concurrency, timeouts, and status
 
 The global subagent concurrency cap defaults to `12` and is shared by normal `Agent` calls and workflow `agent()` calls.
 
@@ -257,6 +257,20 @@ In extension code:
 import { createFlowExtension } from "@kky42/pi-flow";
 
 export default createFlowExtension({ maxConcurrentSubagents: 4 });
+```
+
+Each launched subagent also has a global wall-clock timeout guardrail. It defaults to two hours, is shared by direct `Agent` calls and workflow `agent()` calls, and is operator-facing configuration rather than an `Agent` tool parameter. Values are in milliseconds to match pi extension/SDK timeout conventions.
+
+At pi launch time:
+
+```bash
+pi --subagent-timeout-ms 600000  # 10 minutes; use 0 to disable
+```
+
+In extension code:
+
+```ts
+export default createFlowExtension({ subagentTimeoutMs: 600_000 });
 ```
 
 The TUI footer shows cumulative child-agent usage under the `pi-flow` status key, for example:

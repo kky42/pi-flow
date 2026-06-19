@@ -9,6 +9,7 @@ import {
 import { Container, Text } from "@earendil-works/pi-tui";
 import type { ConcurrencyLimiter } from "../core/concurrency.ts";
 import { isActiveSubagentStatus, isCompletedSubagentStatus, renderSubagentNode } from "../core/subagent-render.ts";
+import { createTimeoutSignal, markSubagentTimedOut } from "../core/timeout.ts";
 import { filterProfilesForModelRegistry, resolveProfileModel, usesPiBackend } from "../core/model.ts";
 import { CHILD_EXCLUDED_TOOLS, spawnSubagent } from "../core/spawn.ts";
 import { getSubagentProfiles } from "../profiles.ts";
@@ -27,6 +28,7 @@ import {
 export interface CreateWorkflowToolOptions {
   getLimiter: () => ConcurrencyLimiter;
   getThinkingLevel: () => ReturnType<ExtensionAPI["getThinkingLevel"]>;
+  getSubagentTimeoutMs: () => number;
   updateStatus: (ctx: ExtensionContext, toolCallId: string, usage: SubagentUsage) => void;
 }
 
@@ -77,7 +79,6 @@ function formatRecentLogs(logs: string[], max = 10): string {
   const prefix = hidden > 0 ? `- ... ${hidden} earlier log(s)\n` : "";
   return `\n\nLogs:\n${prefix}${shown.map((log) => `- ${log}`).join("\n")}`;
 }
-
 
 export function createWorkflowTool(
   options: CreateWorkflowToolOptions,
@@ -163,39 +164,48 @@ export function createWorkflowTool(
 
         const childIndex = call.index ?? ++agentSeq;
         const childId = `${toolCallId}:agent:${childIndex}`;
-        const result = await spawnSubagent({
-          toolCallId: childId,
-          description: call.label,
-          prompt: call.prompt,
-          profile,
-          model,
-          thinkingLevel: profile.thinking ?? options.getThinkingLevel(),
-          ctx,
-          signal: agentSignal,
-          progressEnabled: true,
-          onProgress: (partial) => {
-            const details = partial.details as SubagentToolDetails;
-            const agent = snapshot.agents.find((item) => item.index === childIndex);
-            if (agent && details.progress) {
-              agent.startedAt = details.progress.startedAt;
-              agent.endedAt = details.progress.endedAt;
-              agent.activity = [...details.progress.activity];
-              agent.activityCount = details.progress.activityCount;
-              agent.result = details.progress.result;
-              agent.error = details.progress.error;
-              agent.usage = details.progress.usage;
-              agent.status = details.progress.status;
-              snapshot.frame = (snapshot.frame ?? 0) + 1;
-              emit();
-            }
-          },
-          onUsage: (usage) => options.updateStatus(ctx, childId, usage),
-          excludeTools: CHILD_EXCLUDED_TOOLS,
-          appendInstructions,
-          customTools,
-          outputSchema: externalOutputSchema ? call.schema : undefined,
-        });
-        const resultDetails = result.details as SubagentToolDetails;
+        const timeoutMs = options.getSubagentTimeoutMs();
+        const timeout = createTimeoutSignal(agentSignal, timeoutMs, call.label);
+        let result: Awaited<ReturnType<typeof spawnSubagent>>;
+        try {
+          result = await spawnSubagent({
+            toolCallId: childId,
+            description: call.label,
+            prompt: call.prompt,
+            profile,
+            model,
+            thinkingLevel: profile.thinking ?? options.getThinkingLevel(),
+            ctx,
+            signal: timeout.signal,
+            progressEnabled: true,
+            onProgress: (partial) => {
+              const details = partial.details as SubagentToolDetails;
+              const agent = snapshot.agents.find((item) => item.index === childIndex);
+              if (agent && details.progress) {
+                agent.startedAt = details.progress.startedAt;
+                agent.endedAt = details.progress.endedAt;
+                agent.activity = [...details.progress.activity];
+                agent.activityCount = details.progress.activityCount;
+                agent.result = details.progress.result;
+                agent.error = details.progress.error;
+                agent.usage = details.progress.usage;
+                agent.status = details.progress.status;
+                snapshot.frame = (snapshot.frame ?? 0) + 1;
+                emit();
+              }
+            },
+            onUsage: (usage) => options.updateStatus(ctx, childId, usage),
+            excludeTools: CHILD_EXCLUDED_TOOLS,
+            appendInstructions,
+            customTools,
+            outputSchema: externalOutputSchema ? call.schema : undefined,
+          });
+        } finally {
+          timeout.cleanup();
+        }
+        const resultDetails = timeout.timedOut()
+          ? markSubagentTimedOut(result.details as SubagentToolDetails, timeoutMs)
+          : (result.details as SubagentToolDetails);
         const agent = snapshot.agents.find((item) => item.index === childIndex);
         if (agent) {
           const progress = resultDetails.progress;

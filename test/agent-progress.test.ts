@@ -25,6 +25,10 @@ import { buildCodexArgs, codexUsageToSubagentUsage, estimateCodexCostUsd, extrac
 import { CHILD_EXCLUDED_TOOLS, spawnSubagent } from "../src/core/spawn.ts";
 import { packageRoot, setupPiSubagentTestHarness } from "./helpers/pi-subagent-harness.ts";
 
+function delay(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
 describe("pi-subagent progress and status", () => {
   let tempDir = "";
   let cwd = "";
@@ -170,6 +174,68 @@ describe("pi-subagent progress and status", () => {
     expect(progressUpdates).toEqual([]);
     expect(usageUpdates).toBe(1);
     expect(registration.getPendingResponseCount()).toBe(1);
+
+    disposeSession(session);
+  });
+
+  it("reports a configured direct subagent timeout as a timeout", async () => {
+    const { session, registration, model, modelRegistry } = await createSession({ subagentTimeoutMs: 20 });
+    const tool = session.getToolDefinition("Agent") as any;
+
+    registration.setResponses([
+      async () => {
+        await delay(80);
+        return fauxAssistantMessage("late child output");
+      },
+    ]);
+
+    const result = await tool.execute(
+      "timeout-agent-call",
+      {
+        description: "Slow child",
+        prompt: "Take too long.",
+      },
+      undefined,
+      undefined,
+      makeExecutionContext({ hasUI: false, model, modelRegistry }),
+    );
+
+    expect(result.details.status).toBe("aborted");
+    expect(result.details.error).toContain("Subagent timed out after 20ms");
+    expect(result.details.result).toBeUndefined();
+    expect(result.content[0].text).toContain("timed out after 20ms");
+
+    disposeSession(session);
+  });
+
+  it("does not rewrite an external abort as a timeout when both signals race", async () => {
+    const { session, registration, model, modelRegistry } = await createSession({ subagentTimeoutMs: 20 });
+    const tool = session.getToolDefinition("Agent") as any;
+    const controller = new AbortController();
+
+    registration.setResponses([
+      async () => {
+        await delay(80);
+        return fauxAssistantMessage("late child output");
+      },
+    ]);
+
+    const pending = tool.execute(
+      "external-abort-agent-call",
+      {
+        description: "Externally aborted child",
+        prompt: "Wait until aborted.",
+      },
+      controller.signal,
+      undefined,
+      makeExecutionContext({ hasUI: false, model, modelRegistry }),
+    );
+    setTimeout(() => controller.abort(), 5).unref?.();
+
+    const result = await pending;
+
+    expect(result.details.error ?? "").not.toContain("timed out");
+    expect(result.content[0].text).not.toContain("timed out");
 
     disposeSession(session);
   });

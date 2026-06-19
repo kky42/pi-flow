@@ -29,6 +29,8 @@ type ThinkingLevel = "off" | "minimal" | "low" | "medium" | "high" | "xhigh";
 type CreateSessionOptions = {
   maxConcurrentSubagents?: number;
   maxConcurrentSubagentsFlag?: string;
+  subagentTimeoutMs?: number;
+  subagentTimeoutMsFlag?: string;
   models?: FauxModelDef[];
   defaultModelId?: string;
   thinkingLevel?: ThinkingLevel;
@@ -138,6 +140,8 @@ export function setupPiSubagentTestHarness(onSetup?: (state: HarnessState) => vo
     const {
       maxConcurrentSubagents,
       maxConcurrentSubagentsFlag,
+      subagentTimeoutMs,
+      subagentTimeoutMsFlag,
       models: modelDefs = DEFAULT_MODEL_DEFS,
       defaultModelId,
       thinkingLevel = "high",
@@ -154,11 +158,15 @@ export function setupPiSubagentTestHarness(onSetup?: (state: HarnessState) => vo
     const modelRegistry = ModelRegistry.create(authStorage, join(agentDir, "models.json"));
     const settingsManager = SettingsManager.inMemory({});
     const sessionManager = SessionManager.inMemory(cwd);
+    const extensionOptions = {
+      ...(maxConcurrentSubagents === undefined ? {} : { maxConcurrentSubagents }),
+      ...(subagentTimeoutMs === undefined ? {} : { subagentTimeoutMs }),
+    };
     const resourceLoader = new DefaultResourceLoader({
       cwd,
       agentDir,
       settingsManager,
-      extensionFactories: [createSubagentExtension(maxConcurrentSubagents === undefined ? {} : { maxConcurrentSubagents })],
+      extensionFactories: [createSubagentExtension(extensionOptions)],
       noExtensions: true,
       noSkills: true,
       noPromptTemplates: true,
@@ -168,6 +176,9 @@ export function setupPiSubagentTestHarness(onSetup?: (state: HarnessState) => vo
     await resourceLoader.reload();
     if (maxConcurrentSubagentsFlag !== undefined) {
       resourceLoader.getExtensions().runtime.flagValues.set("max-concurrent-subagents", maxConcurrentSubagentsFlag);
+    }
+    if (subagentTimeoutMsFlag !== undefined) {
+      resourceLoader.getExtensions().runtime.flagValues.set("subagent-timeout-ms", subagentTimeoutMsFlag);
     }
 
     const { session } = await createAgentSession({

@@ -668,6 +668,7 @@ describe("workflow tool rendering", () => {
   const tool = createWorkflowTool({
     getLimiter: () => new ConcurrencyLimiter(4),
     getThinkingLevel: () => "high",
+    getSubagentTimeoutMs: () => 0,
     updateStatus: () => {},
   }) as unknown as {
     renderCall: (args: unknown, theme: Theme, context: { executionStarted: boolean }) => { render: (width: number) => string[] };
