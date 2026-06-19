@@ -51,12 +51,17 @@ describe("pi-subagent rendering", () => {
   });
   it("renders renderCall and renderResult with subagent type, description, and status", async () => {
     let captured: any;
+    const flags = new Map<string, boolean | string>();
     const mockApi: any = {
       registerTool: (tool: any) => {
         if (tool.name === "Agent") {
           captured = tool;
         }
       },
+      registerFlag: (name: string, options: { default?: boolean | string }) => {
+        if (options.default !== undefined) flags.set(name, options.default);
+      },
+      getFlag: (name: string) => flags.get(name),
       on: () => {},
       getThinkingLevel: () => "high",
     };
@@ -112,7 +117,7 @@ describe("pi-subagent rendering", () => {
     const rejectedText = renderToText(captured.renderResult(buildResult("rejected"), {}, theme, {}));
     expect(rejectedText).toContain("rejected: fail");
 
-    const maxConcurrencyRejectedText = renderToText(captured.renderResult({
+    const maxConcurrentSubagentsRejectedText = renderToText(captured.renderResult({
       content: [{ type: "text" as const, text: "x" }],
       details: {
         description: "Optimize task253",
@@ -122,7 +127,7 @@ describe("pi-subagent rendering", () => {
         error: "Maximum subagent concurrency reached",
       },
     }, {}, theme, {}));
-    expect(maxConcurrencyRejectedText).toContain("rejected: max concurrency reached");
+    expect(maxConcurrentSubagentsRejectedText).toContain("rejected: max concurrency reached");
 
     const unknownCallText = renderToText(
       captured.renderCall(
@@ -145,12 +150,17 @@ describe("pi-subagent rendering", () => {
 
   it("renders compact progress with rolling activity and descriptions", async () => {
     let captured: any;
+    const flags = new Map<string, boolean | string>();
     const mockApi: any = {
       registerTool: (tool: any) => {
         if (tool.name === "Agent") {
           captured = tool;
         }
       },
+      registerFlag: (name: string, options: { default?: boolean | string }) => {
+        if (options.default !== undefined) flags.set(name, options.default);
+      },
+      getFlag: (name: string) => flags.get(name),
       on: () => {},
       getThinkingLevel: () => "high",
     };
@@ -204,12 +214,17 @@ describe("pi-subagent rendering", () => {
 
   it("folds long progress activity lines only in the rendered subagent window", async () => {
     let captured: any;
+    const flags = new Map<string, boolean | string>();
     const mockApi: any = {
       registerTool: (tool: any) => {
         if (tool.name === "Agent") {
           captured = tool;
         }
       },
+      registerFlag: (name: string, options: { default?: boolean | string }) => {
+        if (options.default !== undefined) flags.set(name, options.default);
+      },
+      getFlag: (name: string) => flags.get(name),
       on: () => {},
       getThinkingLevel: () => "high",
     };

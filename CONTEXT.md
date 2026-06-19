@@ -8,8 +8,8 @@ This context describes the domain language for a lightweight Claude Code-style s
 A delegated pi agent instance that handles a scoped task in a fresh conversation and returns a final report to its caller. In this project, the unqualified term refers to foreground delegation; background jobs are outside the current meaning.
 _Avoid_: Background task, worker, scheduled agent
 
-**Global Concurrency Limit** (`maxConcurrency`):
-The maximum number of subagents allowed to run concurrently. It is a live in-flight gauge, not a per-turn quota: a slot is taken when a subagent launches and released when it completes, fails, or is aborted. In v1 only the root agent can delegate, so the limit currently bounds root-level foreground parallelism; it is named as a global cap so it can extend to nested delegation (workflows) without changing meaning.
+**Global Concurrency Limit** (`maxConcurrentSubagents`):
+The maximum number of subagents allowed to run concurrently. It is a live in-flight gauge, not a per-turn quota: a slot is taken when a subagent launches and released when it completes, fails, or is aborted. It defaults to 12, can be set by embedded extension code with `createSubagentExtension({ maxConcurrentSubagents })`, and can be overridden at launch with `--max-concurrent-subagents <n>`.
 _Avoid_: Delegation width, fan-out quota, per-turn budget
 
 **Foreground Parallel Delegation**:
@@ -43,4 +43,4 @@ Developer: "If the caller emits two Agent tool calls in one turn, is that backgr
 Domain expert: "No. Those are foreground parallel delegations; the caller waits for both results before its next reasoning step."
 
 Developer: "Can users set delegation limits through flags?"
-Domain expert: "Not in v1. The extension has fixed default limits unless embedded code supplies different values."
+Domain expert: "Yes. Use `pi --max-concurrent-subagents <n>`; embedded code can set the default with `createSubagentExtension({ maxConcurrentSubagents })`."

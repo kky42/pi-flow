@@ -25,7 +25,7 @@ import {
 } from "./structured-output.ts";
 
 export interface CreateWorkflowToolOptions {
-  limiter: ConcurrencyLimiter;
+  getLimiter: () => ConcurrencyLimiter;
   getThinkingLevel: () => ReturnType<ExtensionAPI["getThinkingLevel"]>;
   updateStatus: (ctx: ExtensionContext, toolCallId: string, usage: SubagentUsage) => void;
 }
@@ -217,7 +217,7 @@ export function createWorkflowTool(
           args: params.args,
           cwd: ctx.cwd,
           signal,
-          limiter: options.limiter,
+          limiter: options.getLimiter(),
           runAgent,
           resumeAgentResults,
           onLog: (message) => {

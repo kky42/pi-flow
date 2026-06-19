@@ -20,9 +20,9 @@
 - There is no pi-subagents permissions system in v1. Presets are prompt-specialized ordinary pi agents; external backends are explicit user dependencies.
 - Pi-backed child sessions cannot launch other pi subagents. Do not give pi child sessions the `Agent` or `workflow` tool, or the coordinator prompt.
 - External CLI backends are not given pi `Agent`/`workflow` tools, but their own CLIs may expose nested/delegation features; do not try to block that from this extension.
-- Parallel delegation is allowed and bounded by a global `maxConcurrency` limit (default `12`), which caps how many subagents run concurrently across the whole agent run. A slot is taken on launch and released on completion/failure/abort. In v2 this same cap is shared with the `workflow` tool.
+- Parallel delegation is allowed and bounded by a global `maxConcurrentSubagents` limit (default `12`), which caps how many subagents run concurrently across the whole agent run. A slot is taken on launch and released on completion/failure/abort. In v2 this same cap is shared with the `workflow` tool.
 - Do not put exact concurrency values in the model-facing coordinator prompt. The prompt should say parallel delegation is bounded; enforcement and exact rejection messages come from the tool.
-- No user-facing flags in v1. Limit overrides are only through `createSubagentExtension({ maxConcurrency })`.
+- Users can override the limit with the pi extension flag `--max-concurrent-subagents <n>`; embedded extension setups can set the default with `createSubagentExtension({ maxConcurrentSubagents })`.
 - Custom subagent profiles are supported from `~/.pi/agent/subagents/*.md`; built-ins remain `general-purpose` and `explorer`. No aliases.
 
 ## pi-subagent workflows (v2)

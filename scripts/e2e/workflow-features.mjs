@@ -10,7 +10,7 @@
 //   - parallel() fan-out and pipeline() multi-stage (with originalItem)
 //   - structured output via agent({ schema }) -> injected structured_output tool
 //   - plain-text agent output contract
-//   - concurrency queue-and-drain (fan-out wider than maxConcurrency)
+//   - concurrency queue-and-drain (fan-out wider than maxConcurrentSubagents)
 //   - determinism rejection (Date.now() refused at parse time)
 //   - saved-workflow registry via { name } (global ~/.pi/agent/workflows)
 //   - resume-by-replay via { scriptPath, resumeFromRunId } (cached prefix)
@@ -502,7 +502,7 @@ async function scenarioConcurrency(ctx) {
   const wrapper = path.join(ctx.sessionRoot, "low-concurrency-extension.ts");
   writeFileSync(
     wrapper,
-    `import { createSubagentExtension } from ${JSON.stringify(extensionPath)};\nexport default createSubagentExtension({ maxConcurrency: 2 });\n`,
+    `import { createSubagentExtension } from ${JSON.stringify(extensionPath)};\nexport default createSubagentExtension({ maxConcurrentSubagents: 2 });\n`,
   );
   await runPi({
     ...ctx.run,

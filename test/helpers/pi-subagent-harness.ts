@@ -27,7 +27,8 @@ export const packageRoot = dirname(dirname(dirname(fileURLToPath(import.meta.url
 export type FauxModelDef = { id: string; name: string; reasoning: boolean };
 type ThinkingLevel = "off" | "minimal" | "low" | "medium" | "high" | "xhigh";
 type CreateSessionOptions = {
-  maxConcurrency?: number;
+  maxConcurrentSubagents?: number;
+  maxConcurrentSubagentsFlag?: string;
   models?: FauxModelDef[];
   defaultModelId?: string;
   thinkingLevel?: ThinkingLevel;
@@ -134,7 +135,13 @@ export function setupPiSubagentTestHarness(onSetup?: (state: HarnessState) => vo
   }
 
   async function createSession(options: CreateSessionOptions = {}) {
-    const { maxConcurrency, models: modelDefs = DEFAULT_MODEL_DEFS, defaultModelId, thinkingLevel = "high" } = options;
+    const {
+      maxConcurrentSubagents,
+      maxConcurrentSubagentsFlag,
+      models: modelDefs = DEFAULT_MODEL_DEFS,
+      defaultModelId,
+      thinkingLevel = "high",
+    } = options;
     const registration = registerFauxProvider({ models: modelDefs });
     registrations.push(registration);
 
@@ -151,7 +158,7 @@ export function setupPiSubagentTestHarness(onSetup?: (state: HarnessState) => vo
       cwd,
       agentDir,
       settingsManager,
-      extensionFactories: [createSubagentExtension(maxConcurrency === undefined ? {} : { maxConcurrency })],
+      extensionFactories: [createSubagentExtension(maxConcurrentSubagents === undefined ? {} : { maxConcurrentSubagents })],
       noExtensions: true,
       noSkills: true,
       noPromptTemplates: true,
@@ -159,6 +166,9 @@ export function setupPiSubagentTestHarness(onSetup?: (state: HarnessState) => vo
       noContextFiles: true,
     });
     await resourceLoader.reload();
+    if (maxConcurrentSubagentsFlag !== undefined) {
+      resourceLoader.getExtensions().runtime.flagValues.set("max-concurrent-subagents", maxConcurrentSubagentsFlag);
+    }
 
     const { session } = await createAgentSession({
       cwd,

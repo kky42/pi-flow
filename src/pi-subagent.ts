@@ -33,7 +33,8 @@ import type {
   SubagentUsage,
 } from "./types.ts";
 
-const DEFAULT_MAX_CONCURRENCY = 12;
+const DEFAULT_MAX_CONCURRENT_SUBAGENTS = 12;
+const MAX_CONCURRENT_SUBAGENTS_FLAG = "max-concurrent-subagents";
 
 function isProjectTrusted(ctx: ExtensionContext): boolean {
   try {
@@ -61,7 +62,7 @@ type AgentToolParams = Static<typeof agentToolParameters>;
 
 interface DelegationState {
   limiter: ConcurrencyLimiter;
-  maxConcurrency: number;
+  maxConcurrentSubagents: number;
   progressEnabled: boolean;
 }
 
@@ -92,14 +93,15 @@ function shouldEnableProgress(ctx: ExtensionContext): boolean {
   }
 }
 
-function normalizeLimit(value: number | undefined, fallback: number, label: string): number {
+function normalizeMaxConcurrentSubagents(value: number | string | boolean | undefined, fallback: number, label: string): number {
   if (value === undefined) {
     return fallback;
   }
-  if (!Number.isInteger(value) || value < 0) {
-    throw new Error(`${label} must be a non-negative integer`);
+  const parsed = typeof value === "string" && value.trim() !== "" ? Number(value) : value;
+  if (typeof parsed !== "number" || !Number.isInteger(parsed) || parsed < 1) {
+    throw new Error(`${label} must be a positive integer`);
   }
-  return value;
+  return parsed;
 }
 
 function normalizeSubagentType(value: string | undefined): SubagentType {
@@ -310,7 +312,7 @@ function renderProgressNode(node: SubagentProgressNode, theme: Theme): Container
 }
 
 function createAgentTool(
-  state: DelegationState,
+  getState: () => DelegationState,
   options: CreateAgentToolOptions,
 ): ToolDefinition<typeof agentToolParameters, SubagentToolDetails> {
   return defineTool({
@@ -322,6 +324,7 @@ function createAgentTool(
     parameters: agentToolParameters,
     executionMode: "parallel",
     async execute(toolCallId, params, signal, onUpdate, ctx) {
+      const state = getState();
       const effectiveState: DelegationState = {
         ...state,
         progressEnabled: state.progressEnabled || shouldEnableProgress(ctx),
@@ -356,7 +359,7 @@ function createAgentTool(
       const release = state.limiter.tryAcquire();
       if (!release) {
         return textResult(
-          `Maximum subagent concurrency reached for this agent run. maxConcurrency: ${effectiveState.maxConcurrency}.`,
+          `Maximum subagent concurrency reached for this agent run. maxConcurrentSubagents: ${effectiveState.maxConcurrentSubagents}.`,
           {
             description: params.description,
             subagentType,
@@ -416,14 +419,36 @@ function createAgentTool(
 }
 
 export function createSubagentExtension(options: SubagentExtensionOptions = {}): ExtensionFactory {
-  const maxConcurrency = normalizeLimit(options.maxConcurrency, DEFAULT_MAX_CONCURRENCY, "maxConcurrency");
+  const defaultMaxConcurrentSubagents = normalizeMaxConcurrentSubagents(
+    options.maxConcurrentSubagents,
+    DEFAULT_MAX_CONCURRENT_SUBAGENTS,
+    "maxConcurrentSubagents",
+  );
   const workflowEnabled = options.workflow !== false;
 
   return function subagentExtension(pi: ExtensionAPI) {
+    pi.registerFlag(MAX_CONCURRENT_SUBAGENTS_FLAG, {
+      description: `Maximum number of pi-subagents that may run concurrently (default: ${defaultMaxConcurrentSubagents})`,
+      type: "string",
+      default: String(defaultMaxConcurrentSubagents),
+    });
+
     const rootState: DelegationState = {
-      limiter: new ConcurrencyLimiter(maxConcurrency),
-      maxConcurrency,
+      limiter: new ConcurrencyLimiter(defaultMaxConcurrentSubagents),
+      maxConcurrentSubagents: defaultMaxConcurrentSubagents,
       progressEnabled: false,
+    };
+    const syncMaxConcurrentSubagents = () => {
+      const current = normalizeMaxConcurrentSubagents(
+        pi.getFlag(MAX_CONCURRENT_SUBAGENTS_FLAG),
+        defaultMaxConcurrentSubagents,
+        `--${MAX_CONCURRENT_SUBAGENTS_FLAG}`,
+      );
+      if (current !== rootState.maxConcurrentSubagents) {
+        rootState.limiter = new ConcurrencyLimiter(current);
+        rootState.maxConcurrentSubagents = current;
+      }
+      return rootState;
     };
     const usageStatusState = createUsageStatusState();
     const toolOptions: CreateAgentToolOptions = {
@@ -436,11 +461,11 @@ export function createSubagentExtension(options: SubagentExtensionOptions = {}):
       },
     };
 
-    pi.registerTool(createAgentTool(rootState, toolOptions));
+    pi.registerTool(createAgentTool(syncMaxConcurrentSubagents, toolOptions));
     if (workflowEnabled) {
       pi.registerTool(
         createWorkflowTool({
-          limiter: rootState.limiter,
+          getLimiter: () => syncMaxConcurrentSubagents().limiter,
           getThinkingLevel: () => pi.getThinkingLevel(),
           updateStatus: (ctx, toolCallId, usage) => {
             if (!ctx.hasUI) {
@@ -453,6 +478,7 @@ export function createSubagentExtension(options: SubagentExtensionOptions = {}):
     }
 
     pi.on("session_start", (_event, ctx) => {
+      syncMaxConcurrentSubagents();
       usageStatusState.calls.clear();
       usageStatusState.latestCacheHitRate = undefined;
       if (ctx.hasUI) {

@@ -102,6 +102,7 @@ describe("pi-subagent agent contract", () => {
     const extensions = resourceLoader.getExtensions();
     expect(extensions.errors).toEqual([]);
     expect(extensions.extensions).toHaveLength(1);
+    expect(extensions.extensions[0]?.flags.has("max-concurrent-subagents")).toBe(true);
   });
 
 

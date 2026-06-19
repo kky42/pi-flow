@@ -119,6 +119,24 @@ The `workflow` tool is on by default. Disable it for a subagents-only setup:
 createSubagentExtension({ workflow: false });
 ```
 
+## Concurrency Limit
+
+The global subagent concurrency cap defaults to `12` and is shared by normal `Agent` calls and workflow `agent()` calls.
+
+Set it at pi launch time:
+
+```bash
+pi --max-concurrent-subagents 4
+```
+
+Or set the extension default in embedded/package code:
+
+```ts
+createSubagentExtension({ maxConcurrentSubagents: 4 });
+```
+
+The launch flag overrides the embedded default. Normal `Agent` calls currently reject when the cap is full; workflow `agent()` calls queue and drain.
+
 ## Custom Subagents
 
 Define subagents as markdown files. Built-in definitions live in `src/subagents/general-purpose.md` and `src/subagents/explorer.md`; custom definitions live in `~/.pi/agent/subagents/`. The filename is the subagent name, so `~/.pi/agent/subagents/code-reviewer.md` is selected with `subagent_type: "code-reviewer"`.

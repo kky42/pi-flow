@@ -49,7 +49,7 @@ describe("pi-subagent agent concurrency", () => {
     originalPathEnv = state.originalPathEnv;
     registrations = state.registrations;
   });
-  it("does not count an unavailable-profile-model rejection toward maxConcurrency", async () => {
+  it("does not count an unavailable-profile-model rejection toward maxConcurrentSubagents", async () => {
     const subagentsDir = join(agentDir, "subagents");
     mkdirSync(subagentsDir, { recursive: true });
     writeFileSync(join(subagentsDir, "bad-model-agent.md"), `---
@@ -59,7 +59,7 @@ model: ghost/nope
 
 This should not be advertised or launched.`);
 
-    const { session, registration } = await createSession({ maxConcurrency: 1 });
+    const { session, registration } = await createSession({ maxConcurrentSubagents: 1 });
     let rootContinuationContext: Context | undefined;
 
     registration.setResponses([
@@ -92,8 +92,8 @@ This should not be advertised or launched.`);
   });
 
 
-  it("enforces maxConcurrency for foreground parallel Agent calls", async () => {
-    const { session, registration } = await createSession({ maxConcurrency: 1 });
+  it("enforces maxConcurrentSubagents for foreground parallel Agent calls", async () => {
+    const { session, registration } = await createSession({ maxConcurrentSubagents: 1 });
     let rootContinuationContext: Context | undefined;
 
     registration.setResponses([
@@ -124,10 +124,42 @@ This should not be advertised or launched.`);
   });
 
 
+  it("uses --max-concurrent-subagents flag value over the factory default", async () => {
+    const { session, registration } = await createSession({ maxConcurrentSubagents: 3, maxConcurrentSubagentsFlag: "1" });
+    let rootContinuationContext: Context | undefined;
+
+    registration.setResponses([
+      fauxAssistantMessage([
+        fauxToolCall("Agent", {
+          description: "First search",
+          prompt: "First flagged task.",
+        }),
+        fauxToolCall("Agent", {
+          description: "Second search",
+          prompt: "Second flagged task.",
+        }),
+      ], { stopReason: "toolUse" }),
+      fauxAssistantMessage("first flagged result"),
+      (context) => {
+        rootContinuationContext = context;
+        return fauxAssistantMessage("done");
+      },
+    ]);
+
+    await session.prompt("Run two searches with the CLI flag cap.");
+
+    const serialized = JSON.stringify(rootContinuationContext?.messages);
+    expect(serialized).toContain("first flagged result");
+    expect(serialized).toContain("Maximum subagent concurrency reached");
+    expect(serialized).toContain("maxConcurrentSubagents: 1");
+
+    disposeSession(session);
+  });
+
   it("frees slots across user turns so a later turn can still delegate under the cap", async () => {
     // With a live in-flight gauge (and no per-turn reset), each turn's child
     // releases its slot on completion, so the next turn delegates under the cap.
-    const { session, registration } = await createSession({ maxConcurrency: 1 });
+    const { session, registration } = await createSession({ maxConcurrentSubagents: 1 });
 
     registration.setResponses([
       fauxAssistantMessage(
@@ -156,7 +188,7 @@ This should not be advertised or launched.`);
   });
 
   it("counts live in-flight children, not a per-turn quota", async () => {
-    const { session, registration, model, modelRegistry } = await createSession({ maxConcurrency: 2 });
+    const { session, registration, model, modelRegistry } = await createSession({ maxConcurrentSubagents: 2 });
     const tool = session.getToolDefinition("Agent") as any;
     const ctx = makeExecutionContext({ hasUI: false, model, modelRegistry });
 
@@ -207,7 +239,7 @@ This should not be advertised or launched.`);
   });
 
   it("releases completed subagents before later tool rounds in the same user prompt", async () => {
-    const { session, registration } = await createSession({ maxConcurrency: 4 });
+    const { session, registration } = await createSession({ maxConcurrentSubagents: 4 });
 
     registration.setResponses([
       fauxAssistantMessage(
@@ -244,7 +276,7 @@ This should not be advertised or launched.`);
   });
 
   it("releases the slot when a child fails so a later delegation still launches", async () => {
-    const { session, registration, model, modelRegistry } = await createSession({ maxConcurrency: 1 });
+    const { session, registration, model, modelRegistry } = await createSession({ maxConcurrentSubagents: 1 });
     const tool = session.getToolDefinition("Agent") as any;
     const ctx = makeExecutionContext({ hasUI: false, model, modelRegistry });
 
@@ -264,7 +296,7 @@ This should not be advertised or launched.`);
     expect(failed.details.status).toBe("error");
     expect(failed.details.error).toContain("aborted before prompt start");
 
-    // With maxConcurrency 1, the second launch is only possible if the failed
+    // With maxConcurrentSubagents 1, the second launch is only possible if the failed
     // child released its slot via the same finally that releases completed ones.
     const recovered = await tool.execute(
       "recovery-agent-call",

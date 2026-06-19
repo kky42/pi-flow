@@ -666,7 +666,7 @@ describe("saved workflow registry", () => {
 
 describe("workflow tool rendering", () => {
   const tool = createWorkflowTool({
-    limiter: new ConcurrencyLimiter(4),
+    getLimiter: () => new ConcurrencyLimiter(4),
     getThinkingLevel: () => "high",
     updateStatus: () => {},
   }) as unknown as {
@@ -878,8 +878,13 @@ describe("workflow tool rendering", () => {
 
 describe("workflow tool registration", () => {
   function fakeApi(names: string[]) {
+    const flags = new Map<string, boolean | string>();
     return {
       registerTool: (tool: { name: string }) => names.push(tool.name),
+      registerFlag: (name: string, options: { default?: boolean | string }) => {
+        if (options.default !== undefined) flags.set(name, options.default);
+      },
+      getFlag: (name: string) => flags.get(name),
       on: () => {},
       getThinkingLevel: () => "high",
     };

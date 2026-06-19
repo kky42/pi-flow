@@ -19,7 +19,7 @@ export interface SubagentExtensionOptions {
    * taken when a subagent launches and released when it completes, fails, or is
    * aborted. The cap is shared by the `Agent` tool and the `workflow` tool.
    */
-  maxConcurrency?: number;
+  maxConcurrentSubagents?: number;
   /**
    * Register the dynamic `workflow` tool alongside `Agent`. Defaults to true:
    * one product, two entry points. Set to false for a subagents-only surface.
