@@ -27,13 +27,22 @@ export interface SubagentExtensionOptions {
   workflow?: boolean;
 }
 
+export type SubagentRunStatus = "queued" | "running" | "done" | "error" | "aborted";
+
 export interface WorkflowAgentSnapshot {
   index: number;
   label: string;
   phase?: string;
   subagentType?: string;
   backend?: SubagentBackend;
-  status: "running" | "done" | "error";
+  status: SubagentRunStatus;
+  startedAt?: number;
+  endedAt?: number;
+  activity?: string[];
+  activityCount?: number;
+  result?: string;
+  error?: string;
+  usage?: SubagentUsage;
 }
 
 export interface WorkflowToolDetails {
@@ -76,7 +85,7 @@ export interface SubagentProgressNode {
   description: string;
   subagentType: SubagentType | "unknown";
   backend?: SubagentBackend;
-  status: "running" | "completed" | "rejected" | "error";
+  status: SubagentRunStatus;
   startedAt: number;
   endedAt?: number;
   activity: string[];
@@ -90,9 +99,12 @@ export interface SubagentToolDetails {
   description: string;
   subagentType: SubagentType | "unknown";
   backend?: SubagentBackend;
-  status: "running" | "completed" | "rejected" | "error";
+  status: SubagentRunStatus;
   result?: string;
   error?: string;
   usage?: SubagentUsage;
   progress?: SubagentProgressNode;
+  /** Number of currently running subagents, used to choose rich vs compact live rendering. */
+  activeCount?: number;
+  frame?: number;
 }

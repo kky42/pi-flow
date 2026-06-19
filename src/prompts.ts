@@ -106,5 +106,5 @@ Example usage:
 - User asks "explore this repo": use Agent with subagent_type "explorer" and ask it to map the project purpose, key directories, important files, scripts, tests, and caveats without editing files.
 - User asks for a second opinion on a risky change: use Agent with subagent_type "general-purpose" and give it enough context to review independently.
 
-Root-level parallel delegation is bounded by the extension. If the limit is reached, the Agent tool will reject the call.`;
+Root-level parallel delegation is bounded by the extension. If the running limit is reached, extra Agent calls queue and drain as slots free.`;
 }

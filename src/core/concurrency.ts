@@ -7,11 +7,10 @@
  *
  * Two acquisition modes, by design:
  * - `tryAcquire()` — synchronous, non-blocking. Returns a release fn if a slot
- *   is free, else `null`. Used by the `Agent` tool (reject-on-limit: the model
- *   retries on a later turn).
+ *   is free, else `null`. Kept for direct semaphore-style callers/tests.
  * - `acquire(signal?)` — async. Resolves with a release fn when a slot frees.
- *   Used by the `workflow` tool (queue-and-drain: a script legitimately submits
- *   more work than the cap and expects it to drain). Honors an AbortSignal.
+ *   Used by both the `Agent` tool and workflow `agent()` calls so excess
+ *   subagents queue and drain under the shared cap. Honors an AbortSignal.
  *
  * Correctness / no over-subscription: `active` is incremented only on the fast
  * path while `active < max`. A release hands its slot directly to the next

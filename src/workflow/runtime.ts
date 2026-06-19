@@ -156,7 +156,7 @@ export async function runWorkflow<T = unknown>(
 
     const index = ++state.agentCount;
     const label = opts.label || defaultAgentLabel(assignedPhase, index);
-    const call = { prompt: taskPrompt, label, phase: assignedPhase, subagentType, schema: opts.schema };
+    const call = { index, prompt: taskPrompt, label, phase: assignedPhase, subagentType, schema: opts.schema };
     const fingerprint = fingerprintWorkflowAgentCall(call);
     const cachedResult = state.resumePrefixActive ? resumeAgentResults[index - 1] : undefined;
     if (cachedResult?.index === index && cachedResult.fingerprint === fingerprint && !cachedResult.failed) {
@@ -168,6 +168,7 @@ export async function runWorkflow<T = unknown>(
     state.resumePrefixActive = false;
 
     // Queue on the shared global cap. May reject if aborted while waiting.
+    options.onAgentQueued?.({ index, label, phase: assignedPhase, subagentType, prompt: taskPrompt });
     const release = await limiter.acquire(compositeSignal);
     let result: unknown;
     let failed = false;

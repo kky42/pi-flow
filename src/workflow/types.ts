@@ -14,6 +14,7 @@ export interface WorkflowMeta {
 
 /** A single agent() invocation requested by a workflow script. */
 export interface WorkflowAgentCall {
+  index?: number;
   prompt: string;
   label: string;
   phase?: string;
@@ -86,6 +87,7 @@ export interface RunWorkflowOptions {
   onLog?: (message: string) => void;
   onPhase?: (title: string) => void;
   resumeAgentResults?: WorkflowCachedAgentResult[];
+  onAgentQueued?: (event: { index: number; label: string; phase?: string; subagentType: string; prompt: string }) => void;
   onAgentStart?: (event: { index: number; label: string; phase?: string; subagentType: string; prompt: string; cached?: boolean }) => void;
   onAgentEnd?: (event: { index: number; label: string; phase?: string; result: unknown; cached?: boolean; failed?: boolean }) => void;
   onAgentResult?: (event: WorkflowAgentResultEvent) => void | Promise<void>;

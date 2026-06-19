@@ -8,12 +8,12 @@ import {
 } from "@earendil-works/pi-coding-agent";
 import { Container, Text } from "@earendil-works/pi-tui";
 import type { ConcurrencyLimiter } from "../core/concurrency.ts";
-import { getBackendAgentLabel } from "../core/display.ts";
+import { isActiveSubagentStatus, isCompletedSubagentStatus, renderSubagentNode } from "../core/subagent-render.ts";
 import { filterProfilesForModelRegistry, resolveProfileModel, usesPiBackend } from "../core/model.ts";
 import { CHILD_EXCLUDED_TOOLS, spawnSubagent } from "../core/spawn.ts";
 import { getSubagentProfiles } from "../profiles.ts";
 import { WORKFLOW_PROMPT_GUIDELINES, WORKFLOW_PROMPT_SNIPPET } from "../prompts.ts";
-import type { SubagentUsage, WorkflowAgentSnapshot, WorkflowToolDetails } from "../types.ts";
+import type { SubagentToolDetails, SubagentUsage, WorkflowAgentSnapshot, WorkflowToolDetails } from "../types.ts";
 import { isWorkflowAbortError, runWorkflow } from "./runtime.ts";
 import { prepareWorkflowToolSource, workflowToolParameters } from "./source.ts";
 import type { WorkflowAgentRunner } from "./types.ts";
@@ -56,7 +56,7 @@ function cloneSnapshot(snapshot: WorkflowToolDetails): WorkflowToolDetails {
   return {
     ...snapshot,
     phases: [...snapshot.phases],
-    agents: snapshot.agents.map((agent) => ({ ...agent })),
+    agents: snapshot.agents.map((agent) => ({ ...agent, activity: agent.activity ? [...agent.activity] : undefined })),
     logs: [...snapshot.logs],
   };
 }
@@ -110,6 +110,23 @@ export function createWorkflowTool(
       } = prepared.value;
 
       const profiles = filterProfilesForModelRegistry(getSubagentProfiles(getAgentDir()), ctx.modelRegistry);
+      const snapshot: WorkflowToolDetails = {
+        name: metaName,
+        status: "running",
+        agentCount: 0,
+        phases: [],
+        agents: [],
+        logs: [...warnings],
+        source,
+        sourcePath,
+        scriptPath,
+        runId: identity.runId,
+        journalPath: journalWriter?.path,
+        resumeFromRunId,
+        cachedAgentCount: 0,
+      };
+      const emit = () => onUpdate?.(workflowResult(`Workflow "${metaName}" running.`, cloneSnapshot(snapshot)));
+
       let agentSeq = 0;
       const runAgent: WorkflowAgentRunner = async (call, agentSignal) => {
         const profile = profiles.get(call.subagentType);
@@ -144,7 +161,8 @@ export function createWorkflowTool(
           appendInstructions = WORKFLOW_PLAIN_TEXT_OUTPUT_NOTE;
         }
 
-        const childId = `${toolCallId}:agent:${++agentSeq}`;
+        const childIndex = call.index ?? ++agentSeq;
+        const childId = `${toolCallId}:agent:${childIndex}`;
         const result = await spawnSubagent({
           toolCallId: childId,
           description: call.label,
@@ -154,20 +172,51 @@ export function createWorkflowTool(
           thinkingLevel: profile.thinking ?? options.getThinkingLevel(),
           ctx,
           signal: agentSignal,
-          progressEnabled: false,
-          onProgress: undefined,
+          progressEnabled: true,
+          onProgress: (partial) => {
+            const details = partial.details as SubagentToolDetails;
+            const agent = snapshot.agents.find((item) => item.index === childIndex);
+            if (agent && details.progress) {
+              agent.startedAt = details.progress.startedAt;
+              agent.endedAt = details.progress.endedAt;
+              agent.activity = [...details.progress.activity];
+              agent.activityCount = details.progress.activityCount;
+              agent.result = details.progress.result;
+              agent.error = details.progress.error;
+              agent.usage = details.progress.usage;
+              agent.status = details.progress.status;
+              snapshot.frame = (snapshot.frame ?? 0) + 1;
+              emit();
+            }
+          },
           onUsage: (usage) => options.updateStatus(ctx, childId, usage),
           excludeTools: CHILD_EXCLUDED_TOOLS,
           appendInstructions,
           customTools,
           outputSchema: externalOutputSchema ? call.schema : undefined,
         });
-        if (result.details.status !== "completed") {
-          throw new Error(result.details.error ?? "subagent failed");
+        const resultDetails = result.details as SubagentToolDetails;
+        const agent = snapshot.agents.find((item) => item.index === childIndex);
+        if (agent) {
+          const progress = resultDetails.progress;
+          agent.status = resultDetails.status;
+          agent.result = resultDetails.result;
+          agent.error = resultDetails.error;
+          agent.usage = resultDetails.usage;
+          if (progress) {
+            agent.startedAt = progress.startedAt;
+            agent.endedAt = progress.endedAt;
+            agent.activity = [...progress.activity];
+            agent.activityCount = progress.activityCount;
+          }
+          emit();
+        }
+        if (resultDetails.status !== "done") {
+          throw new Error(resultDetails.error ?? "subagent failed");
         }
         if (externalOutputSchema) {
           try {
-            return JSON.parse(result.details.result ?? "null");
+            return JSON.parse(resultDetails.result ?? "null");
           } catch {
             throw new Error("external subagent structured output was not valid JSON");
           }
@@ -178,25 +227,8 @@ export function createWorkflowTool(
           }
           return capture.value;
         }
-        return result.details.result ?? "";
+        return resultDetails.result ?? "";
       };
-
-      const snapshot: WorkflowToolDetails = {
-        name: metaName,
-        status: "running",
-        agentCount: 0,
-        phases: [],
-        agents: [],
-        logs: [...warnings],
-        source,
-        sourcePath,
-        scriptPath,
-        runId: identity.runId,
-        journalPath: journalWriter?.path,
-        resumeFromRunId,
-        cachedAgentCount: 0,
-      };
-      const emit = () => onUpdate?.(workflowResult(`Workflow "${metaName}" running.`, cloneSnapshot(snapshot)));
 
       // Spinner animation is driven here, by the runtime, not by a UI-render
       // timer: while any agent is running we advance a frame counter and re-emit
@@ -205,7 +237,7 @@ export function createWorkflowTool(
       // workflow or a torn-down tool row — and renderResult stays a pure function
       // of the snapshot, which also keeps non-live paths (HTML export) timer-free.
       const heartbeat = setInterval(() => {
-        if (snapshot.status === "running" && snapshot.agents.some((agent) => agent.status === "running")) {
+        if (snapshot.status === "running" && snapshot.agents.some((agent) => isActiveSubagentStatus(agent.status))) {
           snapshot.frame = (snapshot.frame ?? 0) + 1;
           emit();
         }
@@ -231,17 +263,41 @@ export function createWorkflowTool(
             snapshot.currentPhase = title;
             emit();
           },
-          onAgentStart: (event) => {
+          onAgentQueued: (event) => {
             snapshot.agents.push({
               index: event.index,
               label: event.label,
               phase: event.phase,
               subagentType: event.subagentType,
               backend: profiles.get(event.subagentType)?.backend,
-              status: event.cached ? "done" : "running",
+              status: "queued",
+              startedAt: Date.now(),
+              activity: [],
+              activityCount: 0,
             });
             snapshot.agentCount = snapshot.agents.length;
+            emit();
+          },
+          onAgentStart: (event) => {
+            let agent = snapshot.agents.find((item) => item.index === event.index);
+            if (!agent) {
+              agent = {
+                index: event.index,
+                label: event.label,
+                phase: event.phase,
+                subagentType: event.subagentType,
+                backend: profiles.get(event.subagentType)?.backend,
+                status: event.cached ? "done" : "running",
+                activity: [],
+                activityCount: 0,
+              };
+              snapshot.agents.push(agent);
+            }
+            agent.status = event.cached ? "done" : "running";
+            agent.startedAt = Date.now();
+            snapshot.agentCount = snapshot.agents.length;
             if (event.cached) {
+              agent.endedAt = agent.startedAt;
               snapshot.cachedAgentCount = (snapshot.cachedAgentCount ?? 0) + 1;
             }
             emit();
@@ -250,6 +306,10 @@ export function createWorkflowTool(
             const agent = snapshot.agents.find((item) => item.index === event.index);
             if (agent) {
               agent.status = event.failed ? "error" : "done";
+              agent.endedAt = Date.now();
+              if (event.failed && !agent.error) {
+                agent.error = "subagent failed";
+              }
             }
             emit();
           },
@@ -285,8 +345,9 @@ export function createWorkflowTool(
           // Preserve the original workflow failure; journal write failure is secondary.
         }
         for (const agent of snapshot.agents) {
-          if (agent.status === "running") {
-            agent.status = "error";
+          if (isActiveSubagentStatus(agent.status)) {
+            agent.status = aborted ? "aborted" : "error";
+            agent.endedAt = Date.now();
           }
         }
         return workflowResult(
@@ -315,32 +376,14 @@ export function createWorkflowTool(
   });
 }
 
-// Braille spinner matching pi's working indicator; advanced by the runtime
-// heartbeat in execute() via the snapshot's frame counter.
-const SPINNER_FRAMES = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
+// Keep in sync with the shared subagent spinner cadence.
 const SPINNER_INTERVAL_MS = 80;
 
-// Colored leading marker: animated accent spinner while running, green ✓ on
-// success, red ✗ on failure.
-function agentMarker(agent: WorkflowAgentSnapshot, theme: Theme, frame: number): string {
-  if (agent.status === "done") return theme.fg("success", "✓");
-  if (agent.status === "error") return theme.fg("error", "✗");
-  return theme.fg("accent", SPINNER_FRAMES[frame % SPINNER_FRAMES.length]);
-}
-
-// `<marker> <Backend> Agent(<type>, <label>, #<index>)`. The marker is colored by status;
-// the body stays muted (error rows go red so failures read at a glance).
-function renderAgentRow(agent: WorkflowAgentSnapshot, theme: Theme, frame: number, indent: string): Text {
-  const type = agent.subagentType ?? "agent";
-  const body = `${getBackendAgentLabel(agent.backend)}(${type}, ${agent.label}, #${agent.index})`;
-  const bodyColor = agent.status === "error" ? "error" : "muted";
-  return new Text(`${indent}${agentMarker(agent, theme, frame)} ${theme.fg(bodyColor, body)}`, 0, 0);
-}
-
 function agentRenderPriority(agent: WorkflowAgentSnapshot): number {
-  if (agent.status === "error") return 0;
+  if (agent.status === "error" || agent.status === "aborted") return 0;
   if (agent.status === "running") return 1;
-  return 2;
+  if (agent.status === "queued") return 2;
+  return 3;
 }
 
 // Pick which agents to show when a phase exceeds `max` rows. Errors first, then
@@ -381,16 +424,26 @@ function orderedPhases(details: WorkflowToolDetails): (string | undefined)[] {
   return order;
 }
 
+function isFailedWorkflowAgent(agent: WorkflowAgentSnapshot): boolean {
+  return agent.status === "error" || agent.status === "aborted";
+}
+
+function workflowRunningCount(details: WorkflowToolDetails): number {
+  return details.agents.filter((agent) => agent.status === "running").length;
+}
+
 function renderPhaseTree(container: Container, details: WorkflowToolDetails, theme: Theme, frame: number): void {
+  const runningCount = workflowRunningCount(details);
   for (const phase of orderedPhases(details)) {
     const agents = details.agents.filter((agent) => agent.phase === phase);
-    const pDone = agents.filter((agent) => agent.status === "done").length;
-    const pErr = agents.filter((agent) => agent.status === "error").length;
+    const pDone = agents.filter((agent) => isCompletedSubagentStatus(agent.status)).length;
+    const pErr = agents.filter(isFailedWorkflowAgent).length;
     const pRun = agents.filter((agent) => agent.status === "running").length;
+    const pQueued = agents.filter((agent) => agent.status === "queued").length;
     const complete = agents.length > 0 && pDone + pErr === agents.length;
     const isCurrent = phase !== undefined && details.currentPhase === phase;
-    const marker = complete ? "✓" : pRun > 0 || isCurrent ? "▶" : "·";
-    const extra = `${pRun ? ` · ${pRun} running` : ""}${pErr ? ` · ${pErr} failed` : ""}`;
+    const marker = complete ? "✓" : pRun > 0 || pQueued > 0 || isCurrent ? "▶" : "·";
+    const extra = `${pRun ? ` · ${pRun} running` : ""}${pQueued ? ` · ${pQueued} queued` : ""}${pErr ? ` · ${pErr} failed` : ""}`;
     container.addChild(
       new Text(
         `  ${theme.fg(pErr ? "error" : "muted", `${marker} ${phase ?? "unphased"} ${pDone}/${agents.length}${extra}`)}`,
@@ -400,7 +453,7 @@ function renderPhaseTree(container: Container, details: WorkflowToolDetails, the
     );
     const shown = selectAgentsForRender(agents);
     for (const agent of shown) {
-      container.addChild(renderAgentRow(agent, theme, frame, "    "));
+      container.addChild(renderSubagentNode(agent, theme, frame, runningCount, "    "));
     }
     const hidden = agents.length - shown.length;
     if (hidden > 0) {
@@ -410,9 +463,10 @@ function renderPhaseTree(container: Container, details: WorkflowToolDetails, the
 }
 
 function renderFlatAgents(container: Container, details: WorkflowToolDetails, theme: Theme, frame: number): void {
+  const runningCount = workflowRunningCount(details);
   const renderedAgents = selectAgentsForRender(details.agents);
   for (const agent of renderedAgents) {
-    container.addChild(renderAgentRow(agent, theme, frame, "  "));
+    container.addChild(renderSubagentNode(agent, theme, frame, runningCount, "  "));
   }
   // selectAgentsForRender keeps the earliest agents, so the hidden ones are the
   // later indices — the "not shown" marker belongs after the visible rows (as in
@@ -425,8 +479,8 @@ function renderFlatAgents(container: Container, details: WorkflowToolDetails, th
 
 function renderWorkflowSnapshot(details: WorkflowToolDetails, theme: Theme, frame: number): Container {
   const container = new Container();
-  const done = details.agents.filter((agent) => agent.status === "done").length;
-  const failed = details.agents.filter((agent) => agent.status === "error").length;
+  const done = details.agents.filter((agent) => isCompletedSubagentStatus(agent.status)).length;
+  const failed = details.agents.filter(isFailedWorkflowAgent).length;
   const counts = `${done}/${details.agents.length} done${failed ? `, ${failed} failed` : ""}`;
   container.addChild(
     new Text(

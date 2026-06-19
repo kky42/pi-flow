@@ -703,10 +703,10 @@ describe("workflow tool rendering", () => {
     expect(text).toContain("1 failed");
     // scan phase is complete (beta done) -> ✓ header; unphased bucket still running.
     expect(text).toContain("✓ scan 1/1");
-    expect(text).toContain("✓ Codex Agent(codex-reviewer, beta, #2)");
+    expect(text).toContain("✓ Codex Agent(codex-reviewer, beta)");
     expect(text).toContain("▶ unphased 0/2 · 1 running · 1 failed");
-    expect(text).toContain("Pi Agent(explorer, alpha, #1)");
-    expect(text).toContain("✗ Claude Agent(claude-reviewer, gamma, #3)");
+    expect(text).toContain("Pi Agent(explorer: alpha)");
+    expect(text).toContain("✗ Claude Agent(claude-reviewer, gamma)");
     // declared phase renders before the unphased bucket.
     expect(text.indexOf("scan")).toBeLessThan(text.indexOf("unphased"));
   });
@@ -742,8 +742,8 @@ describe("workflow tool rendering", () => {
       logs: [],
     };
     const text = renderToText(tool.renderResult({ content: [{ type: "text", text: "x" }], details }, {}, theme));
-    expect(text).toContain("Agent(agent, alpha, #1)");
-    expect(text).toContain("✓ Agent(agent, beta, #2)");
+    expect(text).toContain("Agent(agent: alpha)");
+    expect(text).toContain("✓ Agent(agent, beta)");
     expect(text).not.toContain("unphased");
   });
 
@@ -764,10 +764,10 @@ describe("workflow tool rendering", () => {
     const text = renderToText(tool.renderResult({ content: [{ type: "text", text: "x" }], details }, {}, theme));
     // Earliest agents are shown; the "not shown" marker stands for the later ones
     // and must come after the visible rows.
-    expect(text).toContain("Agent(agent, a1, #1)");
+    expect(text).toContain("Agent(agent, a1)");
     expect(text).toContain("... 2 agent(s) not shown");
-    expect(text.indexOf("#1")).toBeLessThan(text.indexOf("not shown"));
-    expect(text).not.toContain("#8");
+    expect(text.indexOf("a1")).toBeLessThan(text.indexOf("not shown"));
+    expect(text).not.toContain("a8");
   });
 
   it("advances the spinner glyph from the snapshot frame counter", () => {
@@ -785,8 +785,37 @@ describe("workflow tool rendering", () => {
     // heartbeat's frame counter drives the animation, with no UI-side timer.
     const f0 = renderToText(tool.renderResult({ content: [{ type: "text", text: "x" }], details: make(0) }, {}, theme));
     const f1 = renderToText(tool.renderResult({ content: [{ type: "text", text: "x" }], details: make(1) }, {}, theme));
-    expect(f0).toContain("⠋ Agent(agent, alpha, #1)");
-    expect(f1).toContain("⠙ Agent(agent, alpha, #1)");
+    expect(f0).toContain("⠋ Agent(agent: alpha)");
+    expect(f1).toContain("⠙ Agent(agent: alpha)");
+  });
+
+  it("keeps rich activity rows when queued backlog exceeds the rich threshold", () => {
+    const theme = makeMockTheme();
+    const details: WorkflowToolDetails = {
+      name: "queued-rich",
+      status: "running",
+      agentCount: 8,
+      phases: [],
+      agents: [
+        ...Array.from({ length: 4 }, (_, i) => ({
+          index: i + 1,
+          label: `r${i + 1}`,
+          status: "running" as const,
+          activity: [`activity-${i + 1}`],
+          activityCount: 1,
+        })),
+        ...Array.from({ length: 4 }, (_, i) => ({
+          index: i + 5,
+          label: `q${i + 1}`,
+          status: "queued" as const,
+        })),
+      ],
+      logs: [],
+    };
+    const text = renderToText(tool.renderResult({ content: [{ type: "text", text: "x" }], details }, {}, theme));
+    expect(text).toContain("Agent(agent: r1)");
+    expect(text).toContain("activity-1");
+    expect(text).toContain("◌ Agent(agent, q1) queued");
   });
 
   it("groups multi-phase (loop-style) waves in declaration order and caps per phase", () => {
@@ -835,11 +864,11 @@ describe("workflow tool rendering", () => {
       logs: [],
     };
     const text = renderToText(tool.renderResult({ content: [{ type: "text", text: "x" }], details }, {}, theme));
-    expect(text).toContain("Agent(agent, t1, #1)");
-    expect(text).toContain("Agent(agent, t6, #6)");
+    expect(text).toContain("Agent(agent, t1)");
+    expect(text).toContain("Agent(agent, t6)");
     expect(text).toContain("... 6 more");
-    expect(text).not.toContain("#7");
-    expect(text).not.toContain("#12");
+    expect(text).not.toContain("t7");
+    expect(text).not.toContain("t12");
   });
 
   it("renders a completed snapshot and surfaces a failure message", () => {

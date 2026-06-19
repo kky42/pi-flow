@@ -22,6 +22,7 @@ import { createSubagentExtension } from "../src/pi-subagent.ts";
 import { getSubagentProfiles, loadBuiltinSubagentProfiles } from "../src/profiles.ts";
 import { buildClaudeArgs, claudeUsageToSubagentUsage, extractClaudeCostUsd, extractClaudeError, extractClaudeFinalText, extractClaudeUsage, spawnClaudeSubagent } from "../src/core/claude.ts";
 import { buildCodexArgs, codexUsageToSubagentUsage, estimateCodexCostUsd, extractCodexFinalText, spawnCodexSubagent } from "../src/core/codex.ts";
+import { CHILD_EXCLUDED_TOOLS, spawnSubagent } from "../src/core/spawn.ts";
 import { packageRoot, setupPiSubagentTestHarness } from "./helpers/pi-subagent-harness.ts";
 
 describe("pi-subagent progress and status", () => {
@@ -126,10 +127,48 @@ describe("pi-subagent progress and status", () => {
       makeExecutionContext({ hasUI: false, model, modelRegistry }),
     );
 
-    expect(result.details.status).toBe("error");
+    expect(result.details.status).toBe("aborted");
     expect(result.details.backend).toBe("pi");
-    expect(result.details.error).toContain("aborted before prompt start");
+    expect(result.details.error).toContain("Aborted while waiting for a concurrency slot");
     expect(childContext).toBeUndefined();
+    expect(registration.getPendingResponseCount()).toBe(1);
+
+    disposeSession(session);
+  });
+
+  it("marks a pi subagent aborted when the signal aborts inside spawn", async () => {
+    const { session, registration, model, modelRegistry } = await createSession();
+    const profile = getSubagentProfiles(agentDir).get("general-purpose");
+    expect(profile).toBeDefined();
+    const controller = new AbortController();
+    const progressUpdates: any[] = [];
+    let usageUpdates = 0;
+
+    registration.setResponses([fauxAssistantMessage("should not run")]);
+    controller.abort();
+
+    const result = await spawnSubagent({
+      toolCallId: "spawn-aborted-agent-call",
+      description: "Research config",
+      prompt: "Inspect config loading.",
+      profile: profile!,
+      model,
+      thinkingLevel: "high",
+      ctx: makeExecutionContext({ hasUI: false, model, modelRegistry }) as unknown as ExtensionContext,
+      signal: controller.signal,
+      progressEnabled: true,
+      onProgress: (partial) => progressUpdates.push(partial),
+      onUsage: () => {
+        usageUpdates++;
+      },
+      excludeTools: CHILD_EXCLUDED_TOOLS,
+    });
+
+    expect(result.details.status).toBe("aborted");
+    expect(result.details.progress?.status).toBe("aborted");
+    expect(result.details.error).toContain("Subagent aborted before prompt start");
+    expect(progressUpdates).toEqual([]);
+    expect(usageUpdates).toBe(1);
     expect(registration.getPendingResponseCount()).toBe(1);
 
     disposeSession(session);

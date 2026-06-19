@@ -110,7 +110,7 @@ Key properties:
 - **Structured output.** Pass a JSON Schema as `opts.schema` and `agent()` returns the first validated object instead of text — ideal for composing results in `parallel`/`pipeline`. Pi-backed subagents use an injected terminating `structured_output` tool; Codex-backed subagents use Codex CLI `--output-schema`; Claude-backed subagents use Claude Code `--json-schema`.
 - **Cooperative determinism.** Date APIs and `Math.random()` uses, including simple aliases/destructuring, are rejected to keep normal model-written scripts replayable. This is a lint-style check for trusted code, not a sandbox against malicious JavaScript.
 - **Resumable.** Use the returned `runId` with an edited `scriptPath` to reuse cached subagent outputs for the unchanged prefix of `agent()` calls.
-- **Bounded.** Workflow fan-out shares the same global concurrency cap as the `Agent` tool; excess agents queue and drain as slots free. A workflow also has a hard cap on total `agent()` calls, retained logs, and the orchestration worker heap (512MB old generation by default; this does not cap subagent/tool subprocess memory).
+- **Bounded.** Workflow fan-out shares the same global concurrency cap as the `Agent` tool; excess subagents queue and drain as slots free. A workflow also has a hard cap on total `agent()` calls, retained logs, and the orchestration worker heap (512MB old generation by default; this does not cap subagent/tool subprocess memory).
 - **Foreground.** A workflow is a single blocking tool call. Pi-backed subagents do not receive `Agent` or `workflow`; external CLI backends use their own tool surface.
 
 The `workflow` tool is on by default. Disable it for a subagents-only setup:
@@ -135,7 +135,7 @@ Or set the extension default in embedded/package code:
 createSubagentExtension({ maxConcurrentSubagents: 4 });
 ```
 
-The launch flag overrides the embedded default. Normal `Agent` calls currently reject when the cap is full; workflow `agent()` calls queue and drain.
+The launch flag overrides the embedded default. Normal `Agent` calls and workflow `agent()` calls both queue excess subagents and drain them as slots free.
 
 ## Custom Subagents
 

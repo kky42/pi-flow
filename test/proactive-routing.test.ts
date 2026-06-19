@@ -111,7 +111,6 @@ describe("pi-subagent proactive routing", () => {
       const finalSerialized = JSON.stringify(session.messages);
       expect(finalSerialized).toContain("repo-a auth uses session cookies");
       expect(finalSerialized).toContain("repo-b auth uses JWT");
-      expect(finalSerialized).not.toContain("Maximum subagent concurrency reached");
 
       disposeSession(session);
     });

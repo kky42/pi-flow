@@ -7,7 +7,7 @@ import {
   type Theme,
   type ToolDefinition,
 } from "@earendil-works/pi-coding-agent";
-import { Container, Text, TruncatedText } from "@earendil-works/pi-tui";
+import { Text } from "@earendil-works/pi-tui";
 import { Type, type Static } from "typebox";
 import {
   AGENT_PROMPT_GUIDELINES,
@@ -20,7 +20,8 @@ import { ConcurrencyLimiter } from "./core/concurrency.ts";
 import { getBackendAgentLabel } from "./core/display.ts";
 import { filterProfilesForModelRegistry, resolveProfileModel, usesPiBackend } from "./core/model.ts";
 import { CHILD_EXCLUDED_TOOLS, spawnSubagent } from "./core/spawn.ts";
-import { textResult } from "./core/progress.ts";
+import { createProgressNode, textResult, type AgentToolResult } from "./core/progress.ts";
+import { formatUsage, renderSubagentNode } from "./core/subagent-render.ts";
 import { createWorkflowTool } from "./workflow/tool.ts";
 import { listSavedWorkflows } from "./workflow/registry.ts";
 import type {
@@ -64,6 +65,15 @@ interface DelegationState {
   limiter: ConcurrencyLimiter;
   maxConcurrentSubagents: number;
   progressEnabled: boolean;
+  activeRuns: Map<string, ActiveAgentRun>;
+  frame: number;
+  heartbeat?: ReturnType<typeof setInterval>;
+}
+
+interface ActiveAgentRun {
+  toolCallId: string;
+  progress: SubagentProgressNode;
+  onUpdate: ((result: AgentToolResult) => void) | undefined;
 }
 
 interface SubagentUsageStatusState {
@@ -76,8 +86,7 @@ interface CreateAgentToolOptions {
   updateStatus: (ctx: ExtensionContext, toolCallId: string, usage: SubagentUsage) => void;
 }
 
-const ACTIVITY_DISPLAY_PREVIEW_CHARS = 120;
-const PROGRESS_STATUSES: SubagentProgressNode["status"][] = ["running", "completed", "rejected", "error"];
+const PROGRESS_STATUSES: SubagentProgressNode["status"][] = ["queued", "running", "done", "error", "aborted"];
 const SUBAGENT_BACKENDS: SubagentBackend[] = ["pi", "codex", "claude"];
 
 function shouldEnableProgress(ctx: ExtensionContext): boolean {
@@ -145,70 +154,11 @@ function isSubagentProgressNode(value: unknown): value is SubagentProgressNode {
   );
 }
 
-function getDisplayLabel(subagentType: SubagentType | "unknown"): string {
-  return subagentType;
-}
-
 function getProfileBackend(subagentType: SubagentType | "unknown"): SubagentBackend | undefined {
   if (subagentType === "unknown") {
     return undefined;
   }
   return getSubagentProfiles(getAgentDir()).get(subagentType)?.backend;
-}
-
-function formatProgressTitle(node: SubagentProgressNode): string {
-  const label = getDisplayLabel(node.subagentType);
-  const agentLabel = getBackendAgentLabel(node.backend);
-  const description = node.description.trim();
-  return description ? `${agentLabel}(${label}: ${description})` : `${agentLabel}(${label})`;
-}
-
-function formatDuration(ms: number): string {
-  const totalSeconds = Math.max(0, Math.floor(ms / 1000));
-  const seconds = totalSeconds % 60;
-  const totalMinutes = Math.floor(totalSeconds / 60);
-  const minutes = totalMinutes % 60;
-  const hours = Math.floor(totalMinutes / 60);
-  if (hours > 0) {
-    return `${hours}h${minutes}m${seconds}s`;
-  }
-  if (minutes > 0) {
-    return `${minutes}m${seconds}s`;
-  }
-  return `${seconds}s`;
-}
-
-function formatTokens(count: number): string {
-  if (count < 1000) {
-    return count.toString();
-  }
-  if (count < 10000) {
-    return `${(count / 1000).toFixed(1)}k`;
-  }
-  if (count < 1000000) {
-    return `${Math.round(count / 1000)}k`;
-  }
-  if (count < 10000000) {
-    return `${(count / 1000000).toFixed(1)}M`;
-  }
-  return `${Math.round(count / 1000000)}M`;
-}
-
-function formatUsage(usage: SubagentUsage): string {
-  const parts = [`↑${formatTokens(usage.input)}`, `↓${formatTokens(usage.output)}`];
-  if (usage.cacheRead) {
-    parts.push(`R${formatTokens(usage.cacheRead)}`);
-  }
-  if (usage.cacheWrite) {
-    parts.push(`W${formatTokens(usage.cacheWrite)}`);
-  }
-  if ((usage.cacheRead > 0 || usage.cacheWrite > 0) && usage.latestCacheHitRate !== undefined) {
-    parts.push(`CH${usage.latestCacheHitRate.toFixed(1)}%`);
-  }
-  if (usage.cost) {
-    parts.push(`$${usage.cost.toFixed(3)}${usage.costKnown === false ? "+?" : ""}`);
-  }
-  return parts.join(" ");
 }
 
 function createUsageStatusState(): SubagentUsageStatusState {
@@ -265,50 +215,53 @@ function updateUsageStatus(
   publishUsageStatus(ctx, state);
 }
 
-function formatActivityLineForDisplay(line: string): string {
-  if (line.length <= ACTIVITY_DISPLAY_PREVIEW_CHARS) {
-    return line;
+function getRunningRunCount(state: DelegationState): number {
+  let count = 0;
+  for (const run of state.activeRuns.values()) {
+    if (run.progress.status === "running") {
+      count++;
+    }
   }
-  const hiddenChars = line.length - ACTIVITY_DISPLAY_PREVIEW_CHARS;
-  return `${line.slice(0, ACTIVITY_DISPLAY_PREVIEW_CHARS).trimEnd()} ... (+${hiddenChars} chars)`;
+  return count;
 }
 
-function formatStatusReason(error: string | undefined): string {
-  if (!error) {
-    return "";
-  }
-  if (error === "Maximum subagent concurrency reached") {
-    return ": max concurrency reached";
-  }
-  return `: ${error}`;
+function emitActiveRunUpdate(state: DelegationState, run: ActiveAgentRun): void {
+  run.onUpdate?.(textResult(`Subagent "${run.progress.description}" (${run.progress.subagentType}) ${run.progress.status}.`, {
+    description: run.progress.description,
+    subagentType: run.progress.subagentType,
+    backend: run.progress.backend,
+    status: run.progress.status,
+    result: run.progress.result,
+    error: run.progress.error,
+    usage: run.progress.usage,
+    progress: run.progress,
+    activeCount: getRunningRunCount(state),
+    frame: state.frame,
+  }));
 }
 
-function renderProgressNode(node: SubagentProgressNode, theme: Theme): Container {
-  const container = new Container();
-  const status = node.status === "completed" ? "done" : node.status;
-  const elapsed = formatDuration((node.endedAt ?? Date.now()) - node.startedAt);
-  const usage = node.usage ? ` ${formatUsage(node.usage)}` : "";
-  container.addChild(
-    new Text(
-      `${theme.bold(formatProgressTitle(node))} ${theme.fg("dim", `${status} ${elapsed}${usage}`)}`,
-      0,
-      0,
-    ),
-  );
-
-  const skipped = node.activityCount - node.activity.length;
-  if (skipped > 0) {
-    container.addChild(new Text(`  ${theme.fg("muted", `... +${skipped} earlier events`)}`, 0, 0));
+function broadcastActiveRunUpdates(state: DelegationState): void {
+  for (const run of state.activeRuns.values()) {
+    emitActiveRunUpdate(state, run);
   }
-  for (const line of node.activity) {
-    container.addChild(new TruncatedText(`  ${theme.fg("muted", formatActivityLineForDisplay(line))}`, 0, 0));
-  }
+}
 
-  if (node.error) {
-    container.addChild(new Text(`  ${theme.fg("error", node.error)}`, 0, 0));
+function startAgentHeartbeat(state: DelegationState): void {
+  if (state.heartbeat) {
+    return;
   }
-
-  return container;
+  state.heartbeat = setInterval(() => {
+    if (state.activeRuns.size === 0) {
+      if (state.heartbeat) {
+        clearInterval(state.heartbeat);
+        state.heartbeat = undefined;
+      }
+      return;
+    }
+    state.frame++;
+    broadcastActiveRunUpdates(state);
+  }, 80);
+  state.heartbeat.unref?.();
 }
 
 function createAgentTool(
@@ -338,7 +291,7 @@ function createAgentTool(
           {
             description: params.description,
             subagentType: "unknown",
-            status: "rejected",
+            status: "error",
             error: "Unknown subagent_type",
           },
         );
@@ -351,27 +304,53 @@ function createAgentTool(
           description: params.description,
           subagentType,
           backend: profile.backend,
-          status: "rejected",
+          status: "error",
           error,
         });
       }
 
-      const release = state.limiter.tryAcquire();
-      if (!release) {
-        return textResult(
-          `Maximum subagent concurrency reached for this agent run. maxConcurrentSubagents: ${effectiveState.maxConcurrentSubagents}.`,
-          {
-            description: params.description,
-            subagentType,
-            backend: profile.backend,
-            status: "rejected",
-            error: "Maximum subagent concurrency reached",
-          },
-        );
+      const progress = effectiveState.progressEnabled
+        ? createProgressNode(toolCallId, params.description, subagentType, "queued", profile.backend)
+        : undefined;
+      const run = progress ? { toolCallId, progress, onUpdate } : undefined;
+      if (run) {
+        state.activeRuns.set(toolCallId, run);
+        startAgentHeartbeat(state);
+        broadcastActiveRunUpdates(state);
+      }
+
+      let release: (() => void) | undefined;
+      try {
+        release = await state.limiter.acquire(signal);
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        const status = signal?.aborted ? "aborted" : "error";
+        if (run) {
+          run.progress.status = status;
+          run.progress.error = message;
+          run.progress.endedAt = Date.now();
+          emitActiveRunUpdate(state, run);
+          state.activeRuns.delete(toolCallId);
+          broadcastActiveRunUpdates(state);
+        }
+        return textResult(`Subagent "${params.description}" (${subagentType}) ${status}: ${message}`, {
+          description: params.description,
+          subagentType,
+          backend: profile.backend,
+          status,
+          error: message,
+          ...(run ? { progress: run.progress, activeCount: getRunningRunCount(state), frame: state.frame } : {}),
+        });
+      }
+
+      if (run) {
+        run.progress.status = "running";
+        run.progress.startedAt = Date.now();
+        broadcastActiveRunUpdates(state);
       }
 
       try {
-        return await spawnSubagent({
+        const result = await spawnSubagent({
           toolCallId,
           description: params.description,
           prompt: params.prompt,
@@ -381,12 +360,34 @@ function createAgentTool(
           ctx,
           signal,
           progressEnabled: effectiveState.progressEnabled,
-          onProgress: effectiveState.progressEnabled ? onUpdate : undefined,
+          onProgress: effectiveState.progressEnabled && run
+            ? (partial) => {
+                const details = partial.details as SubagentToolDetails;
+                if (details.progress) {
+                  run.progress = details.progress;
+                }
+                emitActiveRunUpdate(state, run);
+              }
+            : undefined,
           onUsage: (usage) => options.updateStatus(ctx, toolCallId, usage),
           excludeTools: CHILD_EXCLUDED_TOOLS,
         });
+        const details = result.details as SubagentToolDetails;
+        if (run && details.progress) {
+          run.progress = details.progress;
+        }
+        if (run) {
+          details.progress = run.progress;
+          details.activeCount = getRunningRunCount(state);
+          details.frame = state.frame;
+        }
+        return result;
       } finally {
         release();
+        if (run) {
+          state.activeRuns.delete(toolCallId);
+          broadcastActiveRunUpdates(state);
+        }
       }
     },
     renderCall(args, theme, context) {
@@ -404,15 +405,19 @@ function createAgentTool(
     },
     renderResult(result, _options, theme) {
       const details = result.details as SubagentToolDetails;
-      if (details.progress) {
-        return renderProgressNode(details.progress, theme);
-      }
-      const usage = details.usage ? ` ${formatUsage(details.usage)}` : "";
-      const reason = details.status === "rejected" || details.status === "error" ? formatStatusReason(details.error) : "";
-      return new Text(
-        `${theme.bold(getBackendAgentLabel(details.backend))} ${theme.fg("muted", details.subagentType)} ${theme.fg("dim", details.description)} ${theme.fg("dim", `${details.status}${reason}${usage}`)}`,
-        0,
-        0,
+      return renderSubagentNode(
+        details.progress ?? {
+          description: details.description,
+          subagentType: details.subagentType,
+          backend: details.backend,
+          status: details.status,
+          result: details.result,
+          error: details.error,
+          usage: details.usage,
+        },
+        theme,
+        details.frame ?? 0,
+        details.activeCount ?? (details.status === "running" ? 1 : 0),
       );
     },
   });
@@ -437,6 +442,8 @@ export function createSubagentExtension(options: SubagentExtensionOptions = {}):
       limiter: new ConcurrencyLimiter(defaultMaxConcurrentSubagents),
       maxConcurrentSubagents: defaultMaxConcurrentSubagents,
       progressEnabled: false,
+      activeRuns: new Map(),
+      frame: 0,
     };
     const syncMaxConcurrentSubagents = () => {
       const current = normalizeMaxConcurrentSubagents(

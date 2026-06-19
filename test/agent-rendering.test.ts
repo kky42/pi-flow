@@ -94,40 +94,59 @@ describe("pi-subagent rendering", () => {
     expect(partialCallText).toContain("Pi Agent");
     expect(partialCallText).not.toContain("undefined");
 
-    const buildResult = (status: "completed" | "error" | "rejected") => ({
+    const buildResult = (status: "done" | "error") => ({
       content: [{ type: "text" as const, text: "x" }],
       details: {
         description: "Find auth files",
         subagentType: "explorer" as const,
         backend: "pi" as const,
         status,
-        ...(status === "completed" ? { result: "ok" } : { error: "fail" }),
+        ...(status === "done" ? { result: "ok" } : { error: "fail" }),
       },
     });
 
-    const completedText = renderToText(captured.renderResult(buildResult("completed"), {}, theme, {}));
+    const completedText = renderToText(captured.renderResult(buildResult("done"), {}, theme, {}));
     expect(completedText).toContain("Pi Agent");
     expect(completedText).toContain("explorer");
     expect(completedText).toContain("Find auth files");
-    expect(completedText).toContain("completed");
+    expect(completedText).toContain("✓");
 
     const errorText = renderToText(captured.renderResult(buildResult("error"), {}, theme, {}));
     expect(errorText).toContain("error: fail");
 
-    const rejectedText = renderToText(captured.renderResult(buildResult("rejected"), {}, theme, {}));
-    expect(rejectedText).toContain("rejected: fail");
-
-    const maxConcurrentSubagentsRejectedText = renderToText(captured.renderResult({
+    const queuedText = renderToText(captured.renderResult({
       content: [{ type: "text" as const, text: "x" }],
       details: {
-        description: "Optimize task253",
+        description: "Wait turn",
         subagentType: "general-purpose" as const,
         backend: "pi" as const,
-        status: "rejected" as const,
-        error: "Maximum subagent concurrency reached",
+        status: "queued" as const,
+        progress: {
+          id: "queued-agent",
+          description: "Wait turn",
+          subagentType: "general-purpose" as const,
+          backend: "pi" as const,
+          status: "queued" as const,
+          startedAt: Date.now(),
+          activity: [],
+          activityCount: 0,
+        },
       },
     }, {}, theme, {}));
-    expect(maxConcurrentSubagentsRejectedText).toContain("rejected: max concurrency reached");
+    expect(queuedText).toContain("◌ Pi Agent(general-purpose, Wait turn) queued");
+
+    const abortedText = renderToText(captured.renderResult({
+      content: [{ type: "text" as const, text: "x" }],
+      details: {
+        description: "Stop task",
+        subagentType: "general-purpose" as const,
+        backend: "pi" as const,
+        status: "aborted" as const,
+        error: "User aborted",
+      },
+    }, {}, theme, {}));
+    expect(abortedText).toContain("⊘");
+    expect(abortedText).toContain("aborted: User aborted");
 
     const unknownCallText = renderToText(
       captured.renderCall(
@@ -202,7 +221,7 @@ describe("pi-subagent rendering", () => {
       const text = renderToText(captured.renderResult(result, {}, theme, {}));
 
       expect(text).toContain("Pi Agent(explorer: Research repo)");
-      expect(text).toContain("running 2s ↑81k ↓4.9k R602k CH94.7% $0.850");
+      expect(text).toContain("2s ↑81k ↓4.9k R602k CH94.7% $0.850");
       expect(text).toContain("... +2 earlier events");
       expect(text).toContain("Read src/types.ts");
       expect(text).toContain("Read app.py");

@@ -556,7 +556,7 @@ export async function spawnCodexSubagent(params: {
     params.onUsage(latestUsage);
     const result = resultText.trim() || "(no final text output)";
     if (progress) {
-      progress.status = "completed";
+      progress.status = "done";
       progress.result = result;
       progress.usage = latestUsage;
       progress.endedAt = Date.now();
@@ -565,7 +565,7 @@ export async function spawnCodexSubagent(params: {
       description: params.description,
       subagentType,
       backend: params.profile.backend,
-      status: "completed",
+      status: "done",
       result,
       usage: latestUsage,
       ...(progress ? { progress } : {}),
@@ -575,18 +575,20 @@ export async function spawnCodexSubagent(params: {
       abortChild(child);
     }
     const message = error instanceof Error ? error.message : String(error);
+    const status = params.signal?.aborted ? "aborted" : "error";
     params.onUsage(latestUsage);
     if (progress) {
-      progress.status = "error";
+      progress.status = status;
       progress.error = message;
       progress.usage = latestUsage;
       progress.endedAt = Date.now();
     }
-    return textResult(`Subagent "${params.description}" (${subagentType}) failed: ${message}`, {
+    const verb = status === "aborted" ? "aborted" : "failed";
+    return textResult(`Subagent "${params.description}" (${subagentType}) ${verb}: ${message}`, {
       description: params.description,
       subagentType,
       backend: params.profile.backend,
-      status: "error",
+      status,
       error: message,
       usage: latestUsage,
       ...(progress ? { progress } : {}),

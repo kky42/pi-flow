@@ -255,7 +255,7 @@ setTimeout(() => {
       onUsage: () => undefined,
     });
 
-    expect(result.details.status).toBe("error");
+    expect(result.details.status).toBe("aborted");
     expect(result.details.backend).toBe("claude");
     expect(result.details.error).toContain("aborted before prompt start");
     expect(signal.addEventListener).toHaveBeenCalledWith("abort", expect.any(Function), { once: true });

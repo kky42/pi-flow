@@ -244,7 +244,7 @@ export async function spawnSubagent(params: SpawnSubagentParams): Promise<AgentT
     const usage = getSubagentUsage(session);
     onUsage(usage);
     if (progress) {
-      progress.status = "completed";
+      progress.status = "done";
       progress.result = result;
       progress.usage = usage;
       progress.endedAt = Date.now();
@@ -253,26 +253,28 @@ export async function spawnSubagent(params: SpawnSubagentParams): Promise<AgentT
       description,
       subagentType,
       backend: profile.backend,
-      status: "completed",
+      status: "done",
       result,
       usage,
       ...(progress ? { progress } : {}),
     });
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
+    const status = signal?.aborted ? "aborted" : "error";
     const usage = getSubagentUsage(session);
     onUsage(usage);
     if (progress) {
-      progress.status = "error";
+      progress.status = status;
       progress.error = message;
       progress.usage = usage;
       progress.endedAt = Date.now();
     }
-    return textResult(`Subagent "${description}" (${subagentType}) failed: ${message}`, {
+    const verb = status === "aborted" ? "aborted" : "failed";
+    return textResult(`Subagent "${description}" (${subagentType}) ${verb}: ${message}`, {
       description,
       subagentType,
       backend: profile.backend,
-      status: "error",
+      status,
       error: message,
       usage,
       ...(progress ? { progress } : {}),

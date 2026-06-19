@@ -9,7 +9,7 @@ A delegated pi agent instance that handles a scoped task in a fresh conversation
 _Avoid_: Background task, worker, scheduled agent
 
 **Global Concurrency Limit** (`maxConcurrentSubagents`):
-The maximum number of subagents allowed to run concurrently. It is a live in-flight gauge, not a per-turn quota: a slot is taken when a subagent launches and released when it completes, fails, or is aborted. It defaults to 12, can be set by embedded extension code with `createSubagentExtension({ maxConcurrentSubagents })`, and can be overridden at launch with `--max-concurrent-subagents <n>`.
+The maximum number of subagents allowed to run concurrently. It is a live in-flight gauge, not a per-turn quota: a slot is taken when a subagent starts running and released when it completes, fails, or is aborted. Requests above the running cap queue and drain as slots free. It defaults to 12, can be set by embedded extension code with `createSubagentExtension({ maxConcurrentSubagents })`, and can be overridden at launch with `--max-concurrent-subagents <n>`.
 _Avoid_: Delegation width, fan-out quota, per-turn budget
 
 **Foreground Parallel Delegation**:
