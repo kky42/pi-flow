@@ -24,6 +24,10 @@ import { buildClaudeArgs, claudeUsageToSubagentUsage, extractClaudeCostUsd, extr
 import { buildCodexArgs, codexUsageToSubagentUsage, estimateCodexCostUsd, extractCodexFinalText, spawnCodexSubagent } from "../src/core/codex.ts";
 import { packageRoot, setupPiSubagentTestHarness } from "./helpers/pi-subagent-harness.ts";
 
+function delay(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
 describe("pi-subagent workflow integration", () => {
   let tempDir = "";
   let cwd = "";
@@ -69,6 +73,35 @@ describe("pi-subagent workflow integration", () => {
       expect(result.details.agentCount).toBe(1);
       expect(result.details.result).toBe("child analysis done");
       expect(registration.getPendingResponseCount()).toBe(0);
+
+      disposeSession(session);
+    });
+
+    it("applies the configured timeout to workflow subagents", async () => {
+      const { session, registration, model, modelRegistry } = await createSession({ subagentTimeoutMs: 20 });
+      const tool = session.getToolDefinition("workflow") as any;
+
+      registration.setResponses([
+        async () => {
+          await delay(80);
+          return fauxAssistantMessage("late workflow child output");
+        },
+      ]);
+
+      const script = `export const meta = { name: 'slow-flow', description: 'slow workflow child' };\nreturn await agent('wait too long', { label: 'slow' });`;
+      const result = await tool.execute(
+        "wf-timeout",
+        { script },
+        undefined,
+        undefined,
+        makeExecutionContext({ hasUI: false, model, modelRegistry }),
+      );
+
+      expect(result.details.status).toBe("completed");
+      expect(result.details.result).toBeNull();
+      expect(result.details.logs.some((log: string) => log.includes("Subagent timed out after 20ms"))).toBe(true);
+      expect(result.details.agents[0]?.status).toBe("error");
+      expect(result.details.agents[0]?.error).toContain("Subagent timed out after 20ms");
 
       disposeSession(session);
     });

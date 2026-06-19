@@ -9,6 +9,7 @@ import {
 import { Container, Text } from "@earendil-works/pi-tui";
 import type { ConcurrencyLimiter } from "../core/concurrency.ts";
 import { isActiveSubagentStatus, isCompletedSubagentStatus, renderSubagentNode } from "../core/subagent-render.ts";
+import { createTimeoutSignal, markSubagentTimedOut } from "../core/timeout.ts";
 import { filterProfilesForModelRegistry, resolveProfileModel, usesPiBackend } from "../core/model.ts";
 import { CHILD_EXCLUDED_TOOLS, spawnSubagent } from "../core/spawn.ts";
 import { getSubagentProfiles } from "../profiles.ts";
@@ -78,32 +79,6 @@ function formatRecentLogs(logs: string[], max = 10): string {
   const prefix = hidden > 0 ? `- ... ${hidden} earlier log(s)\n` : "";
   return `\n\nLogs:\n${prefix}${shown.map((log) => `- ${log}`).join("\n")}`;
 }
-
-function formatDurationMs(ms: number): string {
-  if (ms % 3_600_000 === 0) return `${ms / 3_600_000} hour${ms === 3_600_000 ? "" : "s"}`;
-  if (ms % 60_000 === 0) return `${ms / 60_000} minute${ms === 60_000 ? "" : "s"}`;
-  if (ms % 1_000 === 0) return `${ms / 1_000} second${ms === 1_000 ? "" : "s"}`;
-  return `${ms}ms`;
-}
-
-function createTimeoutSignal(baseSignal: AbortSignal | undefined, timeoutMs: number, label: string) {
-  if (timeoutMs <= 0) {
-    return { signal: baseSignal, timedOut: () => false, cleanup: () => undefined };
-  }
-  const controller = new AbortController();
-  let timedOut = false;
-  const timer = setTimeout(() => {
-    timedOut = true;
-    controller.abort(new Error(`Subagent "${label}" timed out after ${formatDurationMs(timeoutMs)}`));
-  }, timeoutMs);
-  timer.unref?.();
-  return {
-    signal: baseSignal ? AbortSignal.any([baseSignal, controller.signal]) : controller.signal,
-    timedOut: () => timedOut,
-    cleanup: () => clearTimeout(timer),
-  };
-}
-
 
 export function createWorkflowTool(
   options: CreateWorkflowToolOptions,
@@ -191,46 +166,46 @@ export function createWorkflowTool(
         const childId = `${toolCallId}:agent:${childIndex}`;
         const timeoutMs = options.getSubagentTimeoutMs();
         const timeout = createTimeoutSignal(agentSignal, timeoutMs, call.label);
-        const result = await spawnSubagent({
-          toolCallId: childId,
-          description: call.label,
-          prompt: call.prompt,
-          profile,
-          model,
-          thinkingLevel: profile.thinking ?? options.getThinkingLevel(),
-          ctx,
-          signal: timeout.signal,
-          progressEnabled: true,
-          onProgress: (partial) => {
-            const details = partial.details as SubagentToolDetails;
-            const agent = snapshot.agents.find((item) => item.index === childIndex);
-            if (agent && details.progress) {
-              agent.startedAt = details.progress.startedAt;
-              agent.endedAt = details.progress.endedAt;
-              agent.activity = [...details.progress.activity];
-              agent.activityCount = details.progress.activityCount;
-              agent.result = details.progress.result;
-              agent.error = details.progress.error;
-              agent.usage = details.progress.usage;
-              agent.status = details.progress.status;
-              snapshot.frame = (snapshot.frame ?? 0) + 1;
-              emit();
-            }
-          },
-          onUsage: (usage) => options.updateStatus(ctx, childId, usage),
-          excludeTools: CHILD_EXCLUDED_TOOLS,
-          appendInstructions,
-          customTools,
-          outputSchema: externalOutputSchema ? call.schema : undefined,
-        });
-        timeout.cleanup();
-        const resultDetails = result.details as SubagentToolDetails;
-        if (timeout.timedOut() && resultDetails.status === "aborted") {
-          resultDetails.error = `Subagent timed out after ${formatDurationMs(timeoutMs)}`;
-          if (resultDetails.progress) {
-            resultDetails.progress.error = resultDetails.error;
-          }
+        let result: Awaited<ReturnType<typeof spawnSubagent>>;
+        try {
+          result = await spawnSubagent({
+            toolCallId: childId,
+            description: call.label,
+            prompt: call.prompt,
+            profile,
+            model,
+            thinkingLevel: profile.thinking ?? options.getThinkingLevel(),
+            ctx,
+            signal: timeout.signal,
+            progressEnabled: true,
+            onProgress: (partial) => {
+              const details = partial.details as SubagentToolDetails;
+              const agent = snapshot.agents.find((item) => item.index === childIndex);
+              if (agent && details.progress) {
+                agent.startedAt = details.progress.startedAt;
+                agent.endedAt = details.progress.endedAt;
+                agent.activity = [...details.progress.activity];
+                agent.activityCount = details.progress.activityCount;
+                agent.result = details.progress.result;
+                agent.error = details.progress.error;
+                agent.usage = details.progress.usage;
+                agent.status = details.progress.status;
+                snapshot.frame = (snapshot.frame ?? 0) + 1;
+                emit();
+              }
+            },
+            onUsage: (usage) => options.updateStatus(ctx, childId, usage),
+            excludeTools: CHILD_EXCLUDED_TOOLS,
+            appendInstructions,
+            customTools,
+            outputSchema: externalOutputSchema ? call.schema : undefined,
+          });
+        } finally {
+          timeout.cleanup();
         }
+        const resultDetails = timeout.timedOut()
+          ? markSubagentTimedOut(result.details as SubagentToolDetails, timeoutMs)
+          : (result.details as SubagentToolDetails);
         const agent = snapshot.agents.find((item) => item.index === childIndex);
         if (agent) {
           const progress = resultDetails.progress;

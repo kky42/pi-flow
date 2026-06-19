@@ -62,6 +62,8 @@ describe("pi-subagent agent contract", () => {
     expect(properties).not.toHaveProperty("resume");
     expect(properties).not.toHaveProperty("model");
     expect(properties).not.toHaveProperty("thinking");
+    expect(properties).not.toHaveProperty("timeout");
+    expect(properties).not.toHaveProperty("subagentTimeoutMs");
     expect(tool?.description).toContain("Available agents");
     expect(tool?.promptGuidelines).toContain(
       "Reach for Agent when the task matches an available agent, when you have independent work to run in parallel, or when answering would mean reading across several files.",
