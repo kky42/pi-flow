@@ -17,6 +17,7 @@ import {
   updateProgressFromEvent,
   type AgentToolResult,
 } from "./progress.ts";
+import { spawnCodexSubagent } from "./codex.ts";
 import type { SubagentProfile, SubagentUsage } from "../types.ts";
 
 /**
@@ -36,7 +37,7 @@ export interface SpawnSubagentParams {
   description: string;
   prompt: string;
   profile: SubagentProfile;
-  model: NonNullable<ExtensionContext["model"]>;
+  model?: NonNullable<ExtensionContext["model"]>;
   thinkingLevel: NonNullable<Parameters<typeof createAgentSession>[0]>["thinkingLevel"];
   ctx: ExtensionContext;
   signal: AbortSignal | undefined;
@@ -49,9 +50,35 @@ export interface SpawnSubagentParams {
   appendInstructions?: string;
   /** Extra tools to register in the child session (e.g. a structured_output tool). */
   customTools?: ToolDefinition[];
+  /** JSON schema for CLI backends that can validate final text output natively. */
+  outputSchema?: unknown;
 }
 
 export async function spawnSubagent(params: SpawnSubagentParams): Promise<AgentToolResult> {
+  if (params.profile.backend === "codex") {
+    return spawnCodexSubagent({
+      toolCallId: params.toolCallId,
+      description: params.description,
+      prompt: params.prompt,
+      profile: params.profile,
+      thinkingLevel: params.thinkingLevel,
+      ctx: params.ctx,
+      signal: params.signal,
+      progressEnabled: params.progressEnabled,
+      onProgress: params.onProgress,
+      onUsage: params.onUsage,
+      appendInstructions: params.appendInstructions,
+      outputSchema: params.outputSchema,
+    });
+  }
+  if (!params.model) {
+    return textResult(`Subagent "${params.description}" (${params.profile.name}) failed: No model is selected.`, {
+      description: params.description,
+      subagentType: params.profile.name,
+      status: "error",
+      error: "No model is selected",
+    });
+  }
   const {
     toolCallId,
     description,

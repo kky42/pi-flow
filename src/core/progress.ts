@@ -193,6 +193,7 @@ export function getSubagentUsage(session: {
     cacheRead: stats.tokens.cacheRead,
     cacheWrite: stats.tokens.cacheWrite,
     cost: stats.cost,
+    costKnown: true,
     latestCacheHitRate: extractLatestCacheHitRate(session.messages),
   };
 }

@@ -9,7 +9,7 @@ import {
 import { Container, Text } from "@earendil-works/pi-tui";
 import { Type, type Static } from "typebox";
 import type { ConcurrencyLimiter } from "../core/concurrency.ts";
-import { filterProfilesForModelRegistry, resolveProfileModel } from "../core/model.ts";
+import { filterProfilesForModelRegistry, resolveProfileModel, usesPiBackend } from "../core/model.ts";
 import { CHILD_EXCLUDED_TOOLS, spawnSubagent } from "../core/spawn.ts";
 import { getSubagentProfiles } from "../profiles.ts";
 import { WORKFLOW_PROMPT_GUIDELINES, WORKFLOW_PROMPT_SNIPPET } from "../prompts.ts";
@@ -376,19 +376,27 @@ export function createWorkflowTool(
           );
         }
         const model = resolveProfileModel(profile, ctx);
-        if (!model) {
+        if (usesPiBackend(profile) && !model) {
           throw new Error(profile.model ? `Profile model not found: ${profile.model}` : "No model is selected");
         }
 
-        // Structured output: inject a schema-validated structured_output tool and
-        // require the subagent to end with it. The captured args become the result.
+        // Structured output: native pi subagents get an injected schema-validated
+        // structured_output tool. Codex CLI subagents use codex exec's native
+        // --output-schema final-response validation instead.
         let capture: StructuredOutputCapture | undefined;
         let customTools: ToolDefinition[] | undefined;
         let appendInstructions: string;
-        if (call.schema !== undefined && call.schema !== null) {
+        const externalOutputSchema = !usesPiBackend(profile) && call.schema !== undefined && call.schema !== null;
+        if (call.schema !== undefined && call.schema !== null && !externalOutputSchema) {
           capture = { value: undefined, called: false, count: 0, duplicateCall: false };
           customTools = [createStructuredOutputTool(call.schema, capture)];
           appendInstructions = STRUCTURED_OUTPUT_CONTRACT;
+        } else if (externalOutputSchema) {
+          appendInstructions = [
+            WORKFLOW_PLAIN_TEXT_OUTPUT_NOTE,
+            "Structured output contract:",
+            "- Return only JSON matching the schema supplied to the CLI. No markdown fences or prose.",
+          ].join("\n");
         } else {
           appendInstructions = WORKFLOW_PLAIN_TEXT_OUTPUT_NOTE;
         }
@@ -409,9 +417,17 @@ export function createWorkflowTool(
           excludeTools: CHILD_EXCLUDED_TOOLS,
           appendInstructions,
           customTools,
+          outputSchema: externalOutputSchema ? call.schema : undefined,
         });
         if (result.details.status !== "completed") {
           throw new Error(result.details.error ?? "subagent failed");
+        }
+        if (externalOutputSchema) {
+          try {
+            return JSON.parse(result.details.result ?? "null");
+          } catch {
+            throw new Error("external subagent structured output was not valid JSON");
+          }
         }
         if (capture) {
           if (!capture.called) {

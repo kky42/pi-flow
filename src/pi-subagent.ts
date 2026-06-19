@@ -17,7 +17,7 @@ import {
 } from "./prompts.ts";
 import { getSubagentProfiles } from "./profiles.ts";
 import { ConcurrencyLimiter } from "./core/concurrency.ts";
-import { filterProfilesForModelRegistry, resolveProfileModel } from "./core/model.ts";
+import { filterProfilesForModelRegistry, resolveProfileModel, usesPiBackend } from "./core/model.ts";
 import { CHILD_EXCLUDED_TOOLS, spawnSubagent } from "./core/spawn.ts";
 import { textResult } from "./core/progress.ts";
 import { createWorkflowTool } from "./workflow/tool.ts";
@@ -188,7 +188,7 @@ function formatUsage(usage: SubagentUsage): string {
     parts.push(`CH${usage.latestCacheHitRate.toFixed(1)}%`);
   }
   if (usage.cost) {
-    parts.push(`$${usage.cost.toFixed(3)}`);
+    parts.push(`$${usage.cost.toFixed(3)}${usage.costKnown === false ? "+?" : ""}`);
   }
   return parts.join(" ");
 }
@@ -214,6 +214,9 @@ function getUsageTotals(state: SubagentUsageStatusState): SubagentUsage {
     totals.cacheRead += usage.cacheRead;
     totals.cacheWrite += usage.cacheWrite;
     totals.cost += usage.cost;
+    if (usage.costKnown === false) {
+      totals.costKnown = false;
+    }
   }
   return totals;
 }
@@ -323,7 +326,7 @@ function createAgentTool(
       }
 
       const model = resolveProfileModel(profile, ctx);
-      if (!model) {
+      if (usesPiBackend(profile) && !model) {
         const error = profile.model ? `Profile model not found: ${profile.model}` : "No model is selected";
         return textResult(`Cannot launch subagent: ${error}.`, {
           description: params.description,

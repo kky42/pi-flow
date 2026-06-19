@@ -13,7 +13,7 @@ export const AGENT_PROMPT_GUIDELINES = [
   "If the user asks to explore or survey a repo, use explorer to produce a concise map before doing detailed follow-up yourself.",
   "If the user asks for parallel work, launch multiple Agent calls in the same assistant response.",
   "Write self-contained subagent prompts: fresh subagents do not inherit parent conversation, tool results, or reasoning.",
-  "Subagents cannot launch Agent themselves; coordinate any follow-up delegation from the main conversation after a result returns.",
+  "Pi-backed subagents do not receive Agent; external CLI backends use their own tool surface. Coordinate follow-up delegation from the main conversation after a result returns.",
   "Clearly tell the subagent whether you expect read-only research or code changes.",
   "The Agent final message is returned to you as the tool result and is not shown to the user; relay what matters.",
 ];
@@ -31,9 +31,9 @@ export const WORKFLOW_PROMPT_GUIDELINES = [
   "Write plain JavaScript only. Do not use TypeScript syntax, import/require, fs, Date APIs, or Math.random(). Simple Date/Math.random aliases and destructuring are rejected too. Scripts are trusted code; the determinism check is a cooperative lint, not a sandbox.",
   "parallel() takes functions, not promises: `await parallel(items.map(item => () => agent('...', { label: '...' })))`. Results come back in input order.",
   "pipeline(items, ...stages) runs each item through the stages in order while different items run concurrently; each stage receives (previousValue, originalItem, index). Prefer pipeline() for multi-stage work — there is no barrier between stages. Reach for parallel() only when you genuinely need all results together, e.g. dedup or a zero-count early exit.",
-  "Give each agent() a unique short `label` and pick a `subagent_type` (defaults to general-purpose) so it inherits that profile's real model, thinking level, tools, and system prompt.",
+  "Give each agent() a unique short `label` and pick a `subagent_type` (defaults to general-purpose) so it uses that profile's configured backend, model, thinking level, prompt, and pi-backend tool allowlist.",
   "Pass a JSON Schema as agent()'s `schema` option whenever the script must branch, route, filter, or aggregate on a result: the subagent is forced to return one validated object (agent() resolves to that object instead of text), so `if (r.kind === ...)` / `flags.filter(...)` are reliable. Omit `schema` for prose findings you only read or synthesize.",
-  "Subagents are fresh sessions with no parent context and cannot launch workflows or other subagents; include all needed context and paths in each agent() prompt.",
+  "Subagents are fresh sessions with no parent context. Pi-backed subagents do not receive Agent/workflow; external CLI backends use their own tool surface. Include all needed context and paths in each agent() prompt.",
   "Failed agent()/parallel()/pipeline() branches resolve to null and are logged unless the workflow is aborted; check for nulls before synthesizing.",
 ];
 
@@ -75,7 +75,7 @@ Inline script contract:
 - Plain JavaScript only; no imports, no Date APIs, no Math.random(). Simple Date/Math.random aliases and destructuring are rejected too. Scripts are trusted code; the determinism check is cooperative lint, not a sandbox.
 - parallel() takes thunks: \`await parallel(items.map(i => () => agent('...', { label: '...' })))\`. pipeline(items, ...stages) pipelines each item through stages while items run concurrently — prefer it for multi-stage work (no barrier between stages); use parallel() only when you need all results together.
 
-Each agent() spawns a fresh subagent. Set \`subagent_type\` to inherit a profile's model, thinking, tools, and system prompt:
+Each agent() spawns a fresh subagent. Set \`subagent_type\` to use a profile's backend, model, thinking, prompt, and pi-backend tool allowlist:
 ${formatAvailableAgents(profiles)}
 
 agent() options: \`label\` (short unique id), \`phase\` (progress group), \`subagent_type\` (profile above), and \`schema\` (a JSON Schema). Pass \`schema\` when the script must branch, route, filter, or aggregate on the result: the subagent is forced to return one validated object and agent() resolves to that object instead of free text. Omit \`schema\` for prose findings you only synthesize. Example — classify, then dispatch:
@@ -84,7 +84,7 @@ const r = await agent("Classify " + file, { label: "classify", schema: { type: "
 if (r.kind === "entry") { /* ... */ }
 \`\`\`
 
-Subagents cannot launch workflows or other subagents, and do not inherit parent context — brief each agent() prompt fully. Subagent fan-out is bounded by the same global concurrency cap as the Agent tool; the workflow queues excess agents and drains them as slots free.${formatSavedWorkflows(savedWorkflows)}`;
+Subagents do not inherit parent context — brief each agent() prompt fully. Pi-backed subagents do not receive Agent/workflow; external CLI backends use their own tool surface. Subagent fan-out is bounded by the same global concurrency cap as the Agent tool; the workflow queues excess agents and drains them as slots free.${formatSavedWorkflows(savedWorkflows)}`;
 }
 
 export function buildCoordinatorPrompt(profiles: Map<string, SubagentProfile>): string {
@@ -99,7 +99,7 @@ Guidelines:
 - Do not use subagents excessively; direct lookup is better when the target file, symbol, or value is already known.
 - If the user asks for parallel work, launch independent Agent calls in the same assistant response.
 - Subagents start fresh and do not inherit parent messages, tool results, or reasoning. Brief them with all needed context.
-- Subagents cannot launch other subagents. Coordinate follow-up delegation from the main conversation after each result returns.
+- Pi-backed subagents do not receive Agent; external CLI backends use their own tool surface. Coordinate follow-up delegation from the main conversation after each result returns.
 - The Agent final message is returned to you as the tool result. Relay what matters to the user.
 
 Example usage:

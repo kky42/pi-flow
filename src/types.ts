@@ -1,9 +1,11 @@
 export type SubagentType = string;
+export type SubagentBackend = "pi" | "codex";
 export type ThinkingLevel = "off" | "minimal" | "low" | "medium" | "high" | "xhigh";
 
 export interface SubagentProfile {
   name: string;
   description: string;
+  backend: SubagentBackend;
   model?: string;
   thinking?: ThinkingLevel;
   tools?: string[];
@@ -59,7 +61,12 @@ export interface SubagentUsage {
   output: number;
   cacheRead: number;
   cacheWrite: number;
+  /** Dollar cost to include in aggregate status. Unknown external costs are represented as 0. */
   cost: number;
+  /** False when an external backend did not expose cost and no local price table entry matched. */
+  costKnown?: boolean;
+  /** True when cost was estimated locally from token usage instead of reported by the backend. */
+  costEstimated?: boolean;
   latestCacheHitRate?: number;
 }
 

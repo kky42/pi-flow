@@ -2,7 +2,7 @@ import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { dirname, basename, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { getAgentDir, parseFrontmatter } from "@earendil-works/pi-coding-agent";
-import type { SubagentProfile, ThinkingLevel } from "./types.ts";
+import type { SubagentBackend, SubagentProfile, ThinkingLevel } from "./types.ts";
 
 const VALID_PROFILE_NAME = /^[a-z0-9][a-z0-9-]*$/;
 const VALID_THINKING_LEVELS = new Set<ThinkingLevel>(["off", "minimal", "low", "medium", "high", "xhigh"]);
@@ -28,16 +28,30 @@ function parseThinking(value: unknown): ThinkingLevel | undefined | "invalid" {
   return VALID_THINKING_LEVELS.has(normalized) ? normalized : "invalid";
 }
 
-function parseModel(value: unknown): string | undefined | "invalid" {
+function parseBackend(value: unknown): SubagentBackend | "invalid" {
+  if (value === undefined || value === null || value === "inherit") {
+    return "pi";
+  }
+  const backend = optionalString(value);
+  if (backend === "pi" || backend === "codex") {
+    return backend;
+  }
+  return "invalid";
+}
+
+function parseModel(value: unknown, backend: SubagentBackend): string | undefined | "invalid" {
   if (value === undefined || value === null || value === "inherit") {
     return undefined;
   }
   const model = optionalString(value);
-  if (!model) {
+  if (!model || /\s/.test(model)) {
     return "invalid";
   }
+  if (backend === "codex") {
+    return model;
+  }
   const separator = model.indexOf("/");
-  if (separator <= 0 || separator === model.length - 1 || model.includes(" ")) {
+  if (separator <= 0 || separator === model.length - 1) {
     return "invalid";
   }
   return model;
@@ -77,7 +91,11 @@ function parseProfileFile(filePath: string, name: string, options: { requireBody
 
   const description = optionalString(parsed.frontmatter.description);
   const body = parsed.body.trim();
-  const model = parseModel(parsed.frontmatter.model);
+  const backend = parseBackend(parsed.frontmatter.backend);
+  if (backend === "invalid") {
+    return undefined;
+  }
+  const model = parseModel(parsed.frontmatter.model, backend);
   const thinking = parseThinking(parsed.frontmatter.thinking);
   const tools = Object.prototype.hasOwnProperty.call(parsed.frontmatter, "tools")
     ? parseToolList(parsed.frontmatter.tools)
@@ -90,6 +108,7 @@ function parseProfileFile(filePath: string, name: string, options: { requireBody
   return {
     name,
     description,
+    backend,
     model,
     thinking,
     tools,
