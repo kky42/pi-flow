@@ -24,6 +24,9 @@
     "check": "tsc --noEmit && vitest run",
     "e2e": "node scripts/e2e/main-agent-comparison.mjs",
     "e2e:compare-claude": "node scripts/e2e/main-agent-comparison.mjs --with-claude",
+    "e2e:workflow-features": "node scripts/e2e/workflow-features.mjs",
+    "e2e:codex-subagent": "node scripts/e2e/codex-subagent.mjs",
+    "e2e:claude-subagent": "node scripts/e2e/claude-subagent.mjs",
     "test": "vitest run"
   },
   "peerDependencies": {
@@ -34,10 +37,10 @@
     "typebox": "*"
   },
   "devDependencies": {
-    "@earendil-works/pi-agent-core": "0.77.0",
-    "@earendil-works/pi-ai": "0.77.0",
-    "@earendil-works/pi-coding-agent": "0.77.0",
-    "@earendil-works/pi-tui": "0.77.0",
+    "@earendil-works/pi-agent-core": "0.79.4",
+    "@earendil-works/pi-ai": "0.79.4",
+    "@earendil-works/pi-coding-agent": "0.79.4",
+    "@earendil-works/pi-tui": "0.79.4",
     "@types/node": "^24.12.4",
     "typebox": "1.1.38",
     "typescript": "^5.9.3",
@@ -62,5 +65,8 @@
   "homepage": "https://github.com/kky42/pi-subagents#readme",
   "publishConfig": {
     "access": "public"
+  },
+  "dependencies": {
+    "acorn": "^8.17.0"
   }
 }

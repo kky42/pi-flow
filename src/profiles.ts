@@ -2,10 +2,9 @@ import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { dirname, basename, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { getAgentDir, parseFrontmatter } from "@earendil-works/pi-coding-agent";
-import type { SubagentProfile, ThinkingLevel } from "./types.ts";
+import type { SubagentBackend, SubagentProfile, ThinkingLevel } from "./types.ts";
 
 const VALID_PROFILE_NAME = /^[a-z0-9][a-z0-9-]*$/;
-const VALID_THINKING_LEVELS = new Set<ThinkingLevel>(["off", "minimal", "low", "medium", "high", "xhigh"]);
 
 const BUNDLED_SUBAGENTS_DIR = join(dirname(fileURLToPath(import.meta.url)), "subagents");
 
@@ -17,30 +16,29 @@ function optionalString(value: unknown): string | undefined {
   return typeof value === "string" && value.trim() ? value.trim() : undefined;
 }
 
-function parseThinking(value: unknown): ThinkingLevel | undefined | "invalid" {
+function parseThinking(value: unknown): ThinkingLevel | undefined {
   if (value === undefined || value === null || value === "inherit") {
     return undefined;
   }
-  if (typeof value !== "string") {
-    return "invalid";
-  }
-  const normalized = value.trim() as ThinkingLevel;
-  return VALID_THINKING_LEVELS.has(normalized) ? normalized : "invalid";
+  return optionalString(value);
 }
 
-function parseModel(value: unknown): string | undefined | "invalid" {
+function parseBackend(value: unknown): SubagentBackend | "invalid" {
+  if (value === undefined || value === null || value === "inherit") {
+    return "pi";
+  }
+  const backend = optionalString(value);
+  if (backend === "pi" || backend === "codex" || backend === "claude") {
+    return backend;
+  }
+  return "invalid";
+}
+
+function parseModel(value: unknown): string | undefined {
   if (value === undefined || value === null || value === "inherit") {
     return undefined;
   }
-  const model = optionalString(value);
-  if (!model) {
-    return "invalid";
-  }
-  const separator = model.indexOf("/");
-  if (separator <= 0 || separator === model.length - 1 || model.includes(" ")) {
-    return "invalid";
-  }
-  return model;
+  return optionalString(value);
 }
 
 function parseToolList(value: unknown): string[] | "invalid" {
@@ -77,19 +75,24 @@ function parseProfileFile(filePath: string, name: string, options: { requireBody
 
   const description = optionalString(parsed.frontmatter.description);
   const body = parsed.body.trim();
+  const backend = parseBackend(parsed.frontmatter.backend);
+  if (backend === "invalid") {
+    return undefined;
+  }
   const model = parseModel(parsed.frontmatter.model);
   const thinking = parseThinking(parsed.frontmatter.thinking);
   const tools = Object.prototype.hasOwnProperty.call(parsed.frontmatter, "tools")
     ? parseToolList(parsed.frontmatter.tools)
     : undefined;
 
-  if (!description || model === "invalid" || thinking === "invalid" || tools === "invalid" || (options.requireBody && !body)) {
+  if (!description || tools === "invalid" || (options.requireBody && !body)) {
     return undefined;
   }
 
   return {
     name,
     description,
+    backend,
     model,
     thinking,
     tools,
@@ -119,7 +122,7 @@ export function loadCustomSubagentProfiles(agentDir = getAgentDir()): Map<string
     if (!isValidSubagentName(name)) {
       continue;
     }
-    const profile = parseProfileFile(join(dir, entry), name, { requireBody: true });
+    const profile = parseProfileFile(join(dir, entry), name, { requireBody: false });
     if (profile) {
       profiles.set(name, profile);
     }

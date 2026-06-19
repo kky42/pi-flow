@@ -85,7 +85,10 @@ const taskSpecs = [
   },
 ];
 
-const scenarios = taskSpecs.flatMap((taskSpec) =>
+const workflowTaskPrompt =
+  "Run a workflow to orient me in this repository: fan out subagents — one to inventory the top-level structure and entry points, one to summarize how the project is built and tested, and one to list the main runtime modules — then synthesize a short orientation from their findings. Please don't change any files.";
+
+const baseScenarios = taskSpecs.flatMap((taskSpec) =>
   fixtureSpecs.map((fixture) => ({
     id: `${taskSpec.task}-${fixture.size}`,
     task: taskSpec.task,
@@ -94,6 +97,20 @@ const scenarios = taskSpecs.flatMap((taskSpec) =>
     prompt: taskSpec.prompt,
   })),
 );
+
+// Workflow fan-out only makes sense on multi-file repos, so it runs on the
+// medium/large buckets. Observational by default (INCONCLUSIVE if the model
+// doesn't reach for the workflow tool); use --strict-observed to require it.
+const workflowScenarios = ["medium", "large"].map((size) => ({
+  id: `workflow-${size}`,
+  task: "workflow",
+  size,
+  fixture: size,
+  prompt: workflowTaskPrompt,
+  expectedTool: "workflow",
+}));
+
+const scenarios = [...baseScenarios, ...workflowScenarios];
 
 function parseArgs(argv) {
   const options = {
@@ -358,8 +375,8 @@ const CLAUDE_TASK_MANAGEMENT_TOOL_NAMES = new Set([
 ]);
 const CLAUDE_NON_DELEGATION_AGENT_NAMES = new Set(["claude"]);
 
-function textContainsPiAgentInvocation(text) {
-  return /"name"\s*:\s*"Agent"/.test(text);
+function textContainsPiSubagentInvocation(text) {
+  return /"name"\s*:\s*"(?:Agent|workflow)"/.test(text);
 }
 
 function addClaudeAgentNames(target, names) {
@@ -482,7 +499,7 @@ function runProcess({
   env = process.env,
   stopOnAgentInvocation = false,
   monitorDir,
-  agentInvocationDetector = textContainsPiAgentInvocation,
+  agentInvocationDetector = textContainsPiSubagentInvocation,
   maxToolCalls = 0,
   toolLimitDetector,
   monitorToolCallCounter,
@@ -623,15 +640,17 @@ function analyzePiTrace(filePath) {
   }
 
   const agentCalls = toolCalls.Agent ?? 0;
+  const workflowCalls = toolCalls.workflow ?? 0;
   const rootToolCalls = Object.values(toolCalls).reduce((sum, count) => sum + count, 0);
   return {
     filePath,
     toolCalls,
     toolResults,
     agentCalls,
+    workflowCalls,
     rootToolCalls,
     readCalls: toolCalls.read ?? 0,
-    behavior: agentCalls > 0 ? "delegate" : "direct",
+    behavior: agentCalls > 0 || workflowCalls > 0 ? "delegate" : "direct",
     finalText: finalTexts.at(-1) ?? "",
   };
 }
@@ -738,7 +757,8 @@ async function runPiScenario(options, fixtures, scenario, repeatIndex) {
   const pass =
     completedEnough &&
     (!scenario.expectedBehavior || trace.behavior === scenario.expectedBehavior) &&
-    (!scenario.requirePiRead || trace.readCalls > 0);
+    (!scenario.requirePiRead || trace.readCalls > 0) &&
+    (!scenario.expectedTool || (trace.toolCalls[scenario.expectedTool] ?? 0) > 0);
 
   const result = {
     kind: "pi",
@@ -747,6 +767,7 @@ async function runPiScenario(options, fixtures, scenario, repeatIndex) {
     size: scenario.size,
     repeat: repeatIndex,
     expectedBehavior: scenario.expectedBehavior,
+    expectedTool: scenario.expectedTool,
     required: Boolean(scenario.expectedBehavior),
     pass,
     command,
@@ -846,6 +867,8 @@ function formatResult(result, options = {}) {
     `rootToolCalls=${result.trace.rootToolCalls ?? "?"}`,
   ];
   if (result.kind === "pi") parts.push(`readCalls=${result.trace.readCalls}`);
+  if (result.kind === "pi" && result.trace.workflowCalls) parts.push(`workflowCalls=${result.trace.workflowCalls}`);
+  if (result.expectedTool) parts.push(`expectedTool=${result.expectedTool}`);
   if (result.command?.stoppedOnAgentInvocation) parts.push("stoppedOnAgent=true");
   if (result.command?.stoppedOnToolLimit) parts.push("stoppedOnToolLimit=true");
   if (result.kind === "claude") {
