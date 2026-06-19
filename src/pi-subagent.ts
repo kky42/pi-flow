@@ -36,6 +36,7 @@ import type {
 
 const DEFAULT_MAX_CONCURRENT_SUBAGENTS = 12;
 const MAX_CONCURRENT_SUBAGENTS_FLAG = "max-concurrent-subagents";
+const STATUS_KEY = "pi-flow";
 
 function isProjectTrusted(ctx: ExtensionContext): boolean {
   try {
@@ -190,16 +191,16 @@ function getUsageTotals(state: SubagentUsageStatusState): SubagentUsage {
 }
 
 function formatUsageStatus(totals: SubagentUsage, theme: Theme): string {
-  return `${theme.fg("dim", "pi-subagents ")}${theme.fg("dim", formatUsage(totals))}`;
+  return `${theme.fg("dim", "pi-flow ")}${theme.fg("dim", formatUsage(totals))}`;
 }
 
 function publishUsageStatus(ctx: ExtensionContext, state: SubagentUsageStatusState): void {
   const totals = getUsageTotals(state);
   if (totals.input === 0 && totals.output === 0 && totals.cacheRead === 0 && totals.cacheWrite === 0 && totals.cost === 0) {
-    ctx.ui.setStatus("pi-subagents", undefined);
+    ctx.ui.setStatus(STATUS_KEY, undefined);
     return;
   }
-  ctx.ui.setStatus("pi-subagents", formatUsageStatus(totals, ctx.ui.theme));
+  ctx.ui.setStatus(STATUS_KEY, formatUsageStatus(totals, ctx.ui.theme));
 }
 
 function updateUsageStatus(
@@ -433,7 +434,7 @@ export function createSubagentExtension(options: SubagentExtensionOptions = {}):
 
   return function subagentExtension(pi: ExtensionAPI) {
     pi.registerFlag(MAX_CONCURRENT_SUBAGENTS_FLAG, {
-      description: `Maximum number of pi-subagents that may run concurrently (default: ${defaultMaxConcurrentSubagents})`,
+      description: `Maximum number of pi-flow subagents that may run concurrently (default: ${defaultMaxConcurrentSubagents})`,
       type: "string",
       default: String(defaultMaxConcurrentSubagents),
     });
@@ -489,7 +490,7 @@ export function createSubagentExtension(options: SubagentExtensionOptions = {}):
       usageStatusState.calls.clear();
       usageStatusState.latestCacheHitRate = undefined;
       if (ctx.hasUI) {
-        ctx.ui.setStatus("pi-subagents", undefined);
+        ctx.ui.setStatus(STATUS_KEY, undefined);
       }
     });
 
@@ -517,4 +518,6 @@ export function createSubagentExtension(options: SubagentExtensionOptions = {}):
   };
 }
 
-export default createSubagentExtension();
+export const createFlowExtension = createSubagentExtension;
+
+export default createFlowExtension();

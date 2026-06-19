@@ -83,7 +83,7 @@ function writeFixture(runRoot) {
   writeFileSync(path.join(fixture, "README.md"), "# Codex subagent E2E\n\nRead e2e-target.txt and report the token.\n", "utf8");
   shell("git", ["init", "-q"], { cwd: fixture });
   shell("git", ["add", "."], { cwd: fixture });
-  shell("git", ["-c", "user.name=pi-subagents-e2e", "-c", "user.email=pi-subagents-e2e@example.invalid", "commit", "-qm", "fixture"], { cwd: fixture });
+  shell("git", ["-c", "user.name=pi-flow-e2e", "-c", "user.email=pi-flow-e2e@example.invalid", "commit", "-qm", "fixture"], { cwd: fixture });
   return fixture;
 }
 
@@ -163,12 +163,12 @@ async function main() {
   const sessionDir = path.join(options.runRoot, "sessions");
   ensureDir(sessionDir);
 
-  const profile = `---\ndescription: E2E Codex CLI smoke profile.\nbackend: codex\nmodel: ${options.codexModel}\nthinking: ${options.codexThinking}\n---\n\nYou are a Codex CLI subagent used by pi-subagents E2E. Use the repository files to answer exactly what was asked. Do not edit files.\n`;
+  const profile = `---\ndescription: E2E Codex CLI smoke profile.\nbackend: codex\nmodel: ${options.codexModel}\nthinking: ${options.codexThinking}\n---\n\nYou are a Codex CLI subagent used by pi-flow E2E. Use the repository files to answer exactly what was asked. Do not edit files.\n`;
   writeFileSync(profilePath, profile, "utf8");
 
   const promptPath = path.join(options.runRoot, "prompt.md");
   const expected = "CODEX_SUBAGENT_OK:gpt-5.4-mini-medium";
-  writeFileSync(promptPath, `You are testing pi-subagents Codex CLI backend.\n\nYou MUST call the Agent tool exactly once with subagent_type \"${profileName}\".\nUse description \"Codex CLI smoke\".\nThe subagent prompt must be:\n\nRead e2e-target.txt in the current working directory and reply with exactly this format and nothing else: CODEX_SUBAGENT_OK:<file content without surrounding whitespace>\n\nAfter the Agent result returns, reply with the subagent's exact final token line.\nExpected token line: ${expected}\n`, "utf8");
+  writeFileSync(promptPath, `You are testing pi-flow Codex CLI backend.\n\nYou MUST call the Agent tool exactly once with subagent_type \"${profileName}\".\nUse description \"Codex CLI smoke\".\nThe subagent prompt must be:\n\nRead e2e-target.txt in the current working directory and reply with exactly this format and nothing else: CODEX_SUBAGENT_OK:<file content without surrounding whitespace>\n\nAfter the Agent result returns, reply with the subagent's exact final token line.\nExpected token line: ${expected}\n`, "utf8");
 
   const command = [
     "pi",

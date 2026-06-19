@@ -204,7 +204,7 @@ describe("pi-subagent progress and status", () => {
     disposeSession(session);
   });
 
-  it("updates a cumulative pi-subagents status line from child usage", async () => {
+  it("updates a cumulative pi-flow status line from child usage", async () => {
     const { session, registration, model, modelRegistry } = await createSession();
     const tool = session.getToolDefinition("Agent") as any;
     const statuses: Array<{ key: string; text: string | undefined }> = [];
@@ -241,7 +241,7 @@ describe("pi-subagent progress and status", () => {
       context,
     );
 
-    const final = statuses.filter((status) => status.key === "pi-subagents").at(-1)?.text ?? "";
+    const final = statuses.filter((status) => status.key === "pi-flow").at(-1)?.text ?? "";
     const usage = {
       input: first.details.usage.input + second.details.usage.input,
       output: first.details.usage.output + second.details.usage.output,
@@ -250,9 +250,9 @@ describe("pi-subagent progress and status", () => {
       cost: first.details.usage.cost + second.details.usage.cost,
       latestCacheHitRate: second.details.usage.latestCacheHitRate,
     };
-    const expected = `pi-subagents ↑${formatTestTokens(usage.input)} ↓${formatTestTokens(usage.output)}`;
+    const expected = `pi-flow ↑${formatTestTokens(usage.input)} ↓${formatTestTokens(usage.output)}`;
 
-    expect(statuses.some((status) => status.key === "pi-subagents" && status.text)).toBe(true);
+    expect(statuses.some((status) => status.key === "pi-flow" && status.text)).toBe(true);
     expect(final).toContain(expected);
     if (usage.cacheRead) {
       expect(final).toContain(`R${formatTestTokens(usage.cacheRead)}`);

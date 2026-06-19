@@ -81,7 +81,7 @@ function writeFixture(runRoot, tokenValue) {
   writeFileSync(path.join(fixture, "README.md"), "# Claude subagent E2E\n\nRead e2e-target.txt and report the token.\n", "utf8");
   shell("git", ["init", "-q"], { cwd: fixture });
   shell("git", ["add", "."], { cwd: fixture });
-  shell("git", ["-c", "user.name=pi-subagents-e2e", "-c", "user.email=pi-subagents-e2e@example.invalid", "commit", "-qm", "fixture"], { cwd: fixture });
+  shell("git", ["-c", "user.name=pi-flow-e2e", "-c", "user.email=pi-flow-e2e@example.invalid", "commit", "-qm", "fixture"], { cwd: fixture });
   return fixture;
 }
 
@@ -163,11 +163,11 @@ async function main() {
   const sessionDir = path.join(options.runRoot, "sessions");
   ensureDir(sessionDir);
 
-  const profile = `---\ndescription: E2E Claude Code smoke profile.\nbackend: claude\nmodel: ${options.claudeModel}\nthinking: ${options.claudeThinking}\n---\n\nYou are a Claude Code subagent used by pi-subagents E2E. Use the repository files to answer exactly what was asked. Do not edit files.\n`;
+  const profile = `---\ndescription: E2E Claude Code smoke profile.\nbackend: claude\nmodel: ${options.claudeModel}\nthinking: ${options.claudeThinking}\n---\n\nYou are a Claude Code subagent used by pi-flow E2E. Use the repository files to answer exactly what was asked. Do not edit files.\n`;
   writeFileSync(profilePath, profile, "utf8");
 
   const promptPath = path.join(options.runRoot, "prompt.md");
-  writeFileSync(promptPath, `You are testing pi-subagents Claude Code backend.\n\nYou MUST call the Agent tool exactly once with subagent_type "${profileName}".\nUse description "Claude Code smoke".\nThe subagent prompt must be:\n\nRead e2e-target.txt in the current working directory and reply with exactly this format and nothing else: CLAUDE_SUBAGENT_OK:<file content without surrounding whitespace>\n\nAfter the Agent result returns, reply with the subagent's exact final token line.\nExpected token line: ${expected}\n`, "utf8");
+  writeFileSync(promptPath, `You are testing pi-flow Claude Code backend.\n\nYou MUST call the Agent tool exactly once with subagent_type "${profileName}".\nUse description "Claude Code smoke".\nThe subagent prompt must be:\n\nRead e2e-target.txt in the current working directory and reply with exactly this format and nothing else: CLAUDE_SUBAGENT_OK:<file content without surrounding whitespace>\n\nAfter the Agent result returns, reply with the subagent's exact final token line.\nExpected token line: ${expected}\n`, "utf8");
 
   const command = [
     "pi",

@@ -118,7 +118,7 @@ function parseArgs(argv) {
     extension: path.join(repoRoot, "index.ts"),
     model: "deepseek/deepseek-v4-flash",
     thinking: "high",
-    sessionRoot: path.join(tmpdir(), `pi-subagent-main-agent-e2e-${Date.now()}`),
+    sessionRoot: path.join(tmpdir(), `pi-flow-main-agent-e2e-${Date.now()}`),
     timeoutMs: 0,
     maxToolCalls: 50,
     repeat: 1,

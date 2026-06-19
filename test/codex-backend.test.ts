@@ -273,8 +273,8 @@ console.log(JSON.stringify({ type: 'turn.completed', usage: { input_tokens: 1000
       cost: 0,
       costKnown: false,
     });
-    const final = statuses.filter((status) => status.key === "pi-subagents").at(-1)?.text ?? "";
-    expect(final).toContain("pi-subagents ↑800 ↓50 R200");
+    const final = statuses.filter((status) => status.key === "pi-flow").at(-1)?.text ?? "";
+    expect(final).toContain("pi-flow ↑800 ↓50 R200");
     expect(final).not.toContain("$");
 
     disposeSession(session);

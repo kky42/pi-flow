@@ -27,6 +27,8 @@ export interface SubagentExtensionOptions {
   workflow?: boolean;
 }
 
+export type FlowExtensionOptions = SubagentExtensionOptions;
+
 export type SubagentRunStatus = "queued" | "running" | "done" | "error" | "aborted";
 
 export interface WorkflowAgentSnapshot {

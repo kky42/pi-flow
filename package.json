@@ -1,7 +1,7 @@
 {
-  "name": "@kky42/pi-subagents",
+  "name": "@kky42/pi-flow",
   "version": "1.0.7",
-  "description": "Claude Code-style subagents for pi.",
+  "description": "Multi-backend subagents and dynamic workflow orchestration for pi.",
   "type": "module",
   "main": "./index.ts",
   "exports": "./index.ts",
@@ -16,7 +16,11 @@
   "keywords": [
     "pi-package",
     "pi-extension",
-    "subagent"
+    "subagent",
+    "workflow",
+    "multi-agent",
+    "codex",
+    "claude"
   ],
   "license": "MIT",
   "scripts": {
@@ -50,19 +54,19 @@
     "extensions": [
       "./index.ts"
     ],
-    "image": "https://raw.githubusercontent.com/kky42/pi-subagents/main/assets/subagents.png"
+    "image": "https://raw.githubusercontent.com/kky42/pi-flow/main/assets/subagents.png"
   },
   "engines": {
     "node": ">=22.19.0"
   },
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/kky42/pi-subagents.git"
+    "url": "git+https://github.com/kky42/pi-flow.git"
   },
   "bugs": {
-    "url": "https://github.com/kky42/pi-subagents/issues"
+    "url": "https://github.com/kky42/pi-flow/issues"
   },
-  "homepage": "https://github.com/kky42/pi-subagents#readme",
+  "homepage": "https://github.com/kky42/pi-flow#readme",
   "publishConfig": {
     "access": "public"
   },
