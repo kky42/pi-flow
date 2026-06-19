@@ -57,273 +57,105 @@ Use it when you want to:
    - local file summarization → Pi + DeepSeek V4 Flash
    - backend implementation → Pi + a stronger coding model
 
-## Workflow shapes
+## Define subagents
 
-### 1. One-off delegation
+`pi-flow` ships two profiles:
 
-Ask pi:
+- `general-purpose` — broad research, code search, and multi-step investigation.
+- `explorer` — fast read-only repository mapping and reference search.
 
-```text
-Explore this repo and tell me the important files before we edit anything.
-```
-
-The main agent can call:
-
-```ts
-Agent({
-  description: "Explore repo",
-  subagent_type: "explorer",
-  prompt: "Map the project purpose, key directories, important files, scripts, tests, and caveats. Do not edit files."
-})
-```
-
-### 2. Adversarial review
-
-```text
-Implement the backend change with Pi, then ask Claude Opus, Codex, and another Pi model to review the diff independently. Merge the findings and only fix confirmed issues.
-```
-
-```text
-main Pi agent
-  ├─ implements change
-  ├─ Claude reviewer: frontend/API risk, UX regressions
-  ├─ Codex reviewer: broad code search, edge cases
-  └─ Pi reviewer: project-local conventions and tests
-         ↓
-  synthesize disagreements → patch → test
-```
-
-### 3. Perspective fusion before building
-
-```text
-Run a workflow: have Pi, Codex, and Claude propose different approaches for this migration. Compare tradeoffs and recommend one plan.
-```
-
-This is useful when the first obvious solution may be a local optimum. The workflow can collect independent plans before the main agent commits to one.
-
-### 4. Large fan-out audit
-
-```text
-Run a workflow to audit TODOs, FIXMEs, skipped tests, risky migrations, and stale docs. Fan out by topic, then synthesize a prioritized report.
-```
-
-```text
-                 workflow script
-                       │
-        ┌──────────────┼──────────────┐
-        ▼              ▼              ▼
-   TODO lane      skipped tests   docs drift
-        │              │              │
-        └──────────────┼──────────────┘
-                       ▼
-                 synthesis lane
-```
-
-## Built-in agents
-
-`pi-flow` includes two built-in profiles:
-
-- `general-purpose` — general agent for complex questions, code search, and multi-step investigations.
-- `explorer` — fast read-only search agent for repo maps, file discovery, references, and concise findings.
-
-Custom profiles live in `~/.pi/agent/subagents/<agent-name>.md`. Fresh subagents start with their own conversation in the same working directory. Parent messages, tool results, and reasoning are **not** inherited, so delegated prompts must be self-contained.
-
-## Dynamic workflows
-
-For fan-out work, ask pi for a **workflow**. The model can write a trusted inline JavaScript script or reuse a saved workflow from disk. The `workflow` tool runs the script, starts real subagents through the same spawn path as `Agent`, and returns a synthesized result.
-
-```text
-Run a workflow to inspect this repository from three angles: architecture, tests, and release risk. Use different backends if useful.
-```
-
-A workflow script looks like this:
-
-```js
-export const meta = { name: "audit", description: "find and summarize tech debt" };
-
-const lanes = ["TODO", "FIXME", "skipped tests"];
-const findings = await parallel(
-  lanes.map((lane) => () =>
-    agent(`Find every ${lane} in this repo. Report file:line.`, {
-      subagent_type: "explorer",
-      label: `find-${lane}`,
-    }),
-  ),
-);
-
-return await agent(`Summarize these findings:\n${findings.join("\n\n")}`, {
-  label: "synthesize",
-});
-```
-
-Workflow globals:
-
-- `agent(prompt, opts)` — spawn one subagent. `opts`: `label`, `phase`, `subagent_type`, `schema`.
-- `parallel(thunks)` — run independent `() => agent(...)` thunks concurrently; results preserve input order.
-- `pipeline(items, ...stages)` — run each item through ordered stages while different items progress concurrently.
-- `phase(title)`, `log(message)`, `args`, and `cwd`.
-
-Important properties:
-
-- **Real backends.** `subagent_type` selects the profile's configured backend, model, thinking level, prompt, and pi-backend tool allowlist.
-- **Structured output.** Pass a JSON Schema as `opts.schema`; `agent()` returns a validated object instead of prose. Pi uses an injected `structured_output` tool, Codex uses `--output-schema`, and Claude Code uses `--json-schema`.
-- **Saved workflows.** Global workflows live in `~/.pi/agent/workflows/*.js`; trusted project workflows live in `.pi/workflows/*.js`.
-- **Resume-by-replay.** Persisted inline runs return `scriptPath`, `runId`, and `journalPath`. Rerun with `workflow({ scriptPath, resumeFromRunId })` to reuse cached outputs for the unchanged prefix of `agent()` calls.
-- **Bounded fan-out.** Normal `Agent` calls and workflow `agent()` calls share one global concurrency cap. Excess subagents queue and drain as slots free.
-- **Foreground and inspectable.** A workflow is one blocking tool call. There is no background daemon, polling API, or hidden scheduler.
-- **Trusted code.** Workflow scripts run in an isolated worker/VM so pi can detect stalls and abort unresponsive scripts, but this is **not a security sandbox**. Treat saved workflows like trusted extensions.
-
-The workflow tool is enabled by default. Disable it when you only want the `Agent` tool:
-
-```ts
-import { createFlowExtension } from "@kky42/pi-flow";
-
-export default createFlowExtension({ workflow: false });
-```
-
-`createSubagentExtension` remains exported as a compatibility alias.
-
-## Custom backend profiles
-
-Define subagents as markdown files. Built-ins are bundled under `src/subagents/`; custom profiles live in `~/.pi/agent/subagents/`. The filename is the `subagent_type`, so `~/.pi/agent/subagents/code-reviewer.md` is selected with `subagent_type: "code-reviewer"`.
+Add your own profiles as Markdown files in `~/.pi/agent/subagents/<name>.md`. The filename becomes the `subagent_type` used by `Agent` and workflow `agent()` calls.
 
 ```md
 ---
-description: Reviews code changes for correctness and maintainability.
+description: Reviews backend changes with local pi tools.
 backend: pi
 tools: read, grep, find, bash
 model: inherit
 thinking: high
 ---
 
-You are a careful code reviewer. Focus on correctness, tests, regressions, and maintainability.
+You are a careful backend reviewer. Focus on correctness, tests, and regressions.
 ```
 
-Fields:
+Frontmatter fields:
 
-- `description` is required and appears in the available-agent roster.
-- `backend` is optional. Omit it or set `pi` for an in-process pi child session. Set `codex` for Codex CLI. Set `claude` for Claude Code.
-- `tools` is optional and applies only to `backend: pi`; it becomes the child-session tool allowlist. `Agent` and `workflow` are always stripped from pi-backed child sessions.
-- `model` is optional. Use `inherit` for the caller's pi model or the external CLI default; explicit strings are passed to the selected backend.
-- `thinking` is optional. Use `inherit` or an explicit effort string supported by the backend.
-- The markdown body is appended as the profile prompt: pi system prompt addition, Codex `developer_instructions`, or Claude Code `--append-system-prompt`.
+- `description` — required; shown in pi's available-agent roster.
+- `backend` — `pi` (default), `codex`, or `claude`.
+- `tools` — pi backend only; child-session tool allowlist. `Agent` and `workflow` are always removed from pi-backed children.
+- `model` / `thinking` — optional; use `inherit` or a backend-supported value.
+- Markdown body — profile prompt appended to the selected backend.
 
-Codex profile:
+External backend examples:
 
 ```md
 ---
-description: Reviews code through Codex CLI.
+description: Broad code review through Codex CLI.
 backend: codex
 model: gpt-5.4-mini
 thinking: high
 ---
 
-You are a careful Codex reviewer. Focus on correctness, tests, and edge cases.
+Review the diff for correctness, missed edge cases, and test gaps.
 ```
-
-Claude Code profile:
 
 ```md
 ---
-description: Reviews UI and frontend changes through Claude Code.
+description: UI and product review through Claude Code.
 backend: claude
 model: opus
 thinking: high
 ---
 
-You are a careful Claude Code reviewer. Focus on UX, frontend architecture, and regressions.
+Review frontend changes for UX, accessibility, and architecture regressions.
 ```
 
-External CLI backends intentionally run in no-approval/yolo mode:
+External profiles run local CLI commands in no-approval mode (`codex exec ... --dangerously-bypass-approvals-and-sandbox`, `claude ... --dangerously-skip-permissions`). Use them only in trusted repositories.
 
-- Codex: `codex exec --json --dangerously-bypass-approvals-and-sandbox -- -`
-- Claude Code: `claude -p --output-format stream-json --verbose --no-session-persistence --dangerously-skip-permissions`
+## Use subagents
 
-Only use external backends in trusted repositories.
-
-## Concurrency, timeouts, and status
-
-The global subagent concurrency cap defaults to `12` and is shared by normal `Agent` calls and workflow `agent()` calls.
-
-At pi launch time:
-
-```bash
-pi --max-concurrent-subagents 4
-```
-
-In extension code:
-
-```ts
-import { createFlowExtension } from "@kky42/pi-flow";
-
-export default createFlowExtension({ maxConcurrentSubagents: 4 });
-```
-
-Each launched subagent also has a global wall-clock timeout guardrail. It defaults to two hours, is shared by direct `Agent` calls and workflow `agent()` calls, and is operator-facing configuration rather than an `Agent` tool parameter. Values are in milliseconds to match pi extension/SDK timeout conventions.
-
-At pi launch time:
-
-```bash
-pi --subagent-timeout-ms 600000  # 10 minutes; use 0 to disable
-```
-
-In extension code:
-
-```ts
-export default createFlowExtension({ subagentTimeoutMs: 600_000 });
-```
-
-The TUI footer shows cumulative child-agent usage under the `pi-flow` status key, for example:
+Ask pi naturally:
 
 ```text
-pi-flow ↑47k ↓3.5k R177k CH91.0% $0.429
+Explore this repo with the explorer subagent, then summarize the important files.
 ```
 
-Codex token usage is parsed from `codex exec --json`; costs are estimated for known OpenAI models and shown as unknown/omitted when no price table matches. Claude token usage and cost are parsed from Claude Code stream-json events when reported.
-
-## Installation in a pi extension setup
-
-For package/extension code:
+Or call the tool shape directly from an agent/tooling context:
 
 ```ts
-import { createFlowExtension } from "@kky42/pi-flow";
-
-export default createFlowExtension();
+Agent({
+  description: "Explore repo",
+  subagent_type: "explorer",
+  prompt: "Map the project purpose, key directories, scripts, tests, and caveats. Do not edit files.",
+});
 ```
 
-Compatibility exports:
+Subagents start fresh in the same working directory. Parent messages and tool results are not inherited, so prompts should be self-contained.
 
-```ts
-import { createSubagentExtension } from "@kky42/pi-flow";
+## Use workflows
+
+Use `workflow` when a task should fan out to several subagents, use different backends, or synthesize multiple independent findings.
+
+You normally do **not** write workflow files by hand. Ask pi in natural language and the main agent can create the workflow, run it, and summarize the result:
+
+```text
+Run a workflow to review this PR from several independent angles and synthesize the findings.
 ```
 
-The old `@kky42/pi-subagents` name should be treated as the pre-rename package name.
+If you want to reuse a workflow, ask pi to save it:
 
-## E2E checks
+```text
+Create and save a reusable workflow for release review, then run it on this repo.
+```
 
-Run the main-agent behavior matrix:
+Saved workflows are trusted JavaScript under the hood. Global workflows live in `~/.pi/agent/workflows/*.js`; trusted project workflows live in `.pi/workflows/*.js`. After a workflow is saved, invoke it by name in natural language. Inline workflow runs can also be resumed by replay from the returned `scriptPath` and `runId`.
+
+## Runtime guardrails
+
+Direct `Agent` calls and workflow `agent()` calls share one global concurrency cap and one wall-clock timeout guardrail:
 
 ```bash
-npm run e2e
+pi --max-concurrent-subagents 4 --subagent-timeout-ms 600000
 ```
 
-Run workflow feature smoke checks:
-
-```bash
-npm run e2e:workflow-features
-```
-
-Run external-backend smoke checks:
-
-```bash
-npm run e2e:codex-subagent
-npm run e2e:claude-subagent
-```
-
-Compare routing behavior against Claude Code:
-
-```bash
-npm run e2e:compare-claude
-```
-
-The e2e scripts use fresh temporary fixtures and isolated pi sessions. Some scenarios are observational: they record whether the main agent chooses to delegate or use `workflow`, not whether every answer is globally optimal.
+Set `--subagent-timeout-ms` to `0` to disable the timeout. Values are milliseconds.
