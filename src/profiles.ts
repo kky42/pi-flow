@@ -33,7 +33,7 @@ function parseBackend(value: unknown): SubagentBackend | "invalid" {
     return "pi";
   }
   const backend = optionalString(value);
-  if (backend === "pi" || backend === "codex") {
+  if (backend === "pi" || backend === "codex" || backend === "claude") {
     return backend;
   }
   return "invalid";
@@ -47,7 +47,7 @@ function parseModel(value: unknown, backend: SubagentBackend): string | undefine
   if (!model || /\s/.test(model)) {
     return "invalid";
   }
-  if (backend === "codex") {
+  if (backend !== "pi") {
     return model;
   }
   const separator = model.indexOf("/");

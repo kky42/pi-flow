@@ -381,8 +381,8 @@ export function createWorkflowTool(
         }
 
         // Structured output: native pi subagents get an injected schema-validated
-        // structured_output tool. Codex CLI subagents use codex exec's native
-        // --output-schema final-response validation instead.
+        // structured_output tool. External CLI subagents use their native
+        // final-response schema validation instead.
         let capture: StructuredOutputCapture | undefined;
         let customTools: ToolDefinition[] | undefined;
         let appendInstructions: string;

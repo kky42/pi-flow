@@ -107,7 +107,7 @@ Key properties:
 - **Reusable.** Save trusted workflow scripts on disk and invoke them by `meta.name`; ad-hoc inline scripts still work and return a session `scriptPath` when the session is persisted.
 - **Trust-gated.** Project-local `.pi/workflows` are ignored unless the project is trusted, and saved workflow files are re-parsed and path-checked before execution.
 - **Real subagents.** Each `agent()` runs through the same spawn path as the `Agent` tool, so `subagent_type` gives it that profile's configured backend, model, thinking level, prompt, and pi-backend tool allowlist.
-- **Structured output.** Pass a JSON Schema as `opts.schema` and `agent()` returns the first validated object instead of text — ideal for composing results in `parallel`/`pipeline`. Pi-backed subagents use an injected terminating `structured_output` tool; Codex-backed subagents use Codex CLI `--output-schema`.
+- **Structured output.** Pass a JSON Schema as `opts.schema` and `agent()` returns the first validated object instead of text — ideal for composing results in `parallel`/`pipeline`. Pi-backed subagents use an injected terminating `structured_output` tool; Codex-backed subagents use Codex CLI `--output-schema`; Claude-backed subagents use Claude Code `--json-schema`.
 - **Cooperative determinism.** Date APIs and `Math.random()` uses, including simple aliases/destructuring, are rejected to keep normal model-written scripts replayable. This is a lint-style check for trusted code, not a sandbox against malicious JavaScript.
 - **Resumable.** Use the returned `runId` with an edited `scriptPath` to reuse cached subagent outputs for the unchanged prefix of `agent()` calls.
 - **Bounded.** Workflow fan-out shares the same global concurrency cap as the `Agent` tool; excess agents queue and drain as slots free. A workflow also has a hard cap on total `agent()` calls, retained logs, and the orchestration worker heap (512MB old generation by default; this does not cap subagent/tool subprocess memory).
@@ -137,11 +137,11 @@ You are a careful code reviewer. Focus on correctness, tests, regressions, and m
 Fields:
 
 - `description` is required and is shown in the available-agent roster.
-- `backend` is optional. Omit it or set `pi` for an in-process pi child session. Set `codex` to run the profile through `codex exec --json --sandbox workspace-write` in the same working directory.
-- `tools` is optional for `backend: pi`; omit it to keep the default child-session tools. When present, it must be a non-empty comma-separated string such as `tools: read, grep, find`; that list becomes the child-session tool allowlist. Tool names can target built-ins (`read`, `bash`, `edit`, `write`, `grep`, `find`, `ls`) and any custom or extension tools loaded into that child session. Unknown tool names are passed to pi, which may ignore them; `Agent` is always stripped from child sessions. Codex-backed profiles use Codex CLI's own tool/permission surface.
-- `model` is optional; omit it or set `inherit` to use the caller's model for `backend: pi`, or Codex CLI's configured default for `backend: codex`. Pi-backed explicit values must use exact `provider/model-id` syntax. Codex-backed explicit values are passed as bare `codex exec --model` values such as `gpt-5.4-mini`.
-- `thinking` is optional; omit it or set `inherit` to use the caller's thinking level. For Codex-backed profiles, `off` is omitted, `xhigh` maps to `high`, and other levels are passed as `model_reasoning_effort`.
-- The markdown body is required. Pi-backed profiles append it to the child agent's system prompt; Codex-backed profiles pass it as Codex `developer_instructions`.
+- `backend` is optional. Omit it or set `pi` for an in-process pi child session. Set `codex` to run the profile through `codex exec --json --sandbox workspace-write` in the same working directory. Set `claude` to run the profile through `claude -p --output-format stream-json --verbose --no-session-persistence --permission-mode acceptEdits` in the same working directory.
+- `tools` is optional for `backend: pi`; omit it to keep the default child-session tools. When present, it must be a non-empty comma-separated string such as `tools: read, grep, find`; that list becomes the child-session tool allowlist. Tool names can target built-ins (`read`, `bash`, `edit`, `write`, `grep`, `find`, `ls`) and any custom or extension tools loaded into that child session. Unknown tool names are passed to pi, which may ignore them; `Agent` is always stripped from child sessions. External CLI profiles use their CLI's own tool/permission surface.
+- `model` is optional; omit it or set `inherit` to use the caller's model for `backend: pi`, Codex CLI's configured default for `backend: codex`, or Claude Code's configured default for `backend: claude`. Pi-backed explicit values must use exact `provider/model-id` syntax. Codex- and Claude-backed explicit values are passed as bare CLI model values such as `gpt-5.4-mini`, `sonnet`, or a full Claude model name.
+- `thinking` is optional; omit it or set `inherit` to use the caller's thinking level. For Codex-backed profiles, `off` is omitted, `xhigh` maps to `high`, and other levels are passed as `model_reasoning_effort`. For Claude-backed profiles, `off` is omitted, `minimal` maps to `low`, and other levels are passed as `--effort`.
+- The markdown body is required. Pi-backed profiles append it to the child agent's system prompt; Codex-backed profiles pass it as Codex `developer_instructions`; Claude-backed profiles pass it as Claude Code `--append-system-prompt`.
 
 Codex example:
 
@@ -156,15 +156,28 @@ thinking: high
 You are a careful Codex code reviewer. Focus on correctness, tests, regressions, and maintainability.
 ```
 
-Files are ignored when the filename is not a valid lowercase kebab-case agent name, the frontmatter is invalid, `description` is missing, `backend` is unknown, the body is empty, `model` is malformed, `tools` is missing a non-empty comma-separated value after the field is present, or `thinking` is not one of `off`, `minimal`, `low`, `medium`, `high`, or `xhigh`. Pi-backed profiles with syntactically valid but unavailable `model` values are not advertised in the active agent roster; Codex-backed model availability is checked by Codex CLI at launch.
+Claude Code example:
+
+```md
+---
+description: Reviews code changes through Claude Code.
+backend: claude
+model: sonnet
+thinking: high
+---
+
+You are a careful Claude Code reviewer. Focus on correctness, tests, regressions, and maintainability.
+```
+
+Files are ignored when the filename is not a valid lowercase kebab-case agent name, the frontmatter is invalid, `description` is missing, `backend` is unknown, the body is empty, `model` is malformed, `tools` is missing a non-empty comma-separated value after the field is present, or `thinking` is not one of `off`, `minimal`, `low`, `medium`, `high`, or `xhigh`. Pi-backed profiles with syntactically valid but unavailable `model` values are not advertised in the active agent roster; external CLI model availability is checked by the target CLI at launch.
 
 ## Notes
 
-- Pi-backed subagents do not receive `Agent` or `workflow`; the main agent coordinates follow-up delegation after each result returns. Codex-backed subagents use Codex CLI's own tool and permission surface.
+- Pi-backed subagents do not receive `Agent` or `workflow`; the main agent coordinates follow-up delegation after each result returns. External CLI subagents use their CLI's own tool and permission surface.
 - Root-level parallel delegation is supported and bounded by the extension.
-- Pi-backed subagents inherit the caller's current model and thinking level unless a custom profile overrides `model` or `thinking`; Codex-backed subagents omit `--model` by default and use Codex CLI's configured default unless the profile sets `model`.
+- Pi-backed subagents inherit the caller's current model and thinking level unless a custom profile overrides `model` or `thinking`; external CLI subagents omit model flags by default and use the target CLI's configured default unless the profile sets `model`.
 - Subagents do not inherit parent conversation messages or tool results, so prompts should be self-contained.
-- The TUI footer shows cumulative child-agent usage under the `pi-subagents` status key, for example `pi-subagents ↑47k ↓3.5k R177k CH91.0% $0.429`. Codex-backed token usage is parsed from `codex exec --json`; costs are estimated for listed models (`gpt-5.5`, `gpt-5.4`, `gpt-5.4-mini`) and treated as unknown/zero for unlisted models.
+- The TUI footer shows cumulative child-agent usage under the `pi-subagents` status key, for example `pi-subagents ↑47k ↓3.5k R177k CH91.0% $0.429`. Codex-backed token usage is parsed from `codex exec --json`; costs are estimated for listed models (`gpt-5.5`, `gpt-5.4`, `gpt-5.4-mini`) and treated as unknown/zero for unlisted models. Claude-backed token usage and cost are parsed from Claude Code stream-json events when reported.
 - `explorer` is prompted as read-only; its child session allows `bash` for read-only exploration and verification commands such as `rg` or test scripts, while pi permissions are still controlled by the active pi runtime.
 
 ## E2E
@@ -190,6 +203,15 @@ npm run e2e:workflow-features
 ```
 
 This exercises workflow tool selection, real subagent fan-out, saved/resume behavior, structured output, abort/limit handling, and progress snapshots against fresh pi sessions.
+
+Run external-backend smoke tests:
+
+```bash
+npm run e2e:codex-subagent
+npm run e2e:claude-subagent
+```
+
+These create temporary custom profiles, force the root agent to call `Agent`, and verify a real Codex CLI or Claude Code child returns the expected token without modifying the fixture repository.
 
 To compare the same scenarios against Claude Code:
 

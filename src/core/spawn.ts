@@ -17,6 +17,7 @@ import {
   updateProgressFromEvent,
   type AgentToolResult,
 } from "./progress.ts";
+import { spawnClaudeSubagent } from "./claude.ts";
 import { spawnCodexSubagent } from "./codex.ts";
 import type { SubagentProfile, SubagentUsage } from "../types.ts";
 
@@ -57,6 +58,22 @@ export interface SpawnSubagentParams {
 export async function spawnSubagent(params: SpawnSubagentParams): Promise<AgentToolResult> {
   if (params.profile.backend === "codex") {
     return spawnCodexSubagent({
+      toolCallId: params.toolCallId,
+      description: params.description,
+      prompt: params.prompt,
+      profile: params.profile,
+      thinkingLevel: params.thinkingLevel,
+      ctx: params.ctx,
+      signal: params.signal,
+      progressEnabled: params.progressEnabled,
+      onProgress: params.onProgress,
+      onUsage: params.onUsage,
+      appendInstructions: params.appendInstructions,
+      outputSchema: params.outputSchema,
+    });
+  }
+  if (params.profile.backend === "claude") {
+    return spawnClaudeSubagent({
       toolCallId: params.toolCallId,
       description: params.description,
       prompt: params.prompt,
