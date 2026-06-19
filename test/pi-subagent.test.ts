@@ -23,7 +23,7 @@ import {
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createSubagentExtension } from "../src/pi-subagent.ts";
 import { getSubagentProfiles, loadBuiltinSubagentProfiles } from "../src/profiles.ts";
-import { buildClaudeArgs, claudeUsageToSubagentUsage, extractClaudeCostUsd, extractClaudeFinalText, extractClaudeUsage, spawnClaudeSubagent } from "../src/core/claude.ts";
+import { buildClaudeArgs, claudeUsageToSubagentUsage, extractClaudeCostUsd, extractClaudeError, extractClaudeFinalText, extractClaudeUsage, spawnClaudeSubagent } from "../src/core/claude.ts";
 import { buildCodexArgs, codexUsageToSubagentUsage, estimateCodexCostUsd, extractCodexFinalText, spawnCodexSubagent } from "../src/core/codex.ts";
 
 const packageRoot = dirname(dirname(fileURLToPath(import.meta.url)));
@@ -520,7 +520,7 @@ description: : : oops
 ---
 
 Ignored.`);
-    // Valid frontmatter but an empty body: custom profiles require a non-empty body.
+    // Valid frontmatter with an empty body: custom profiles may omit an extra system prompt.
     writeFileSync(join(subagentsDir, "empty-body.md"), `---
 description: Valid frontmatter but empty body.
 ---
@@ -540,17 +540,29 @@ description: Valid frontmatter but empty body.
       tools: ["read", "greb"],
       systemPrompt: "Unknown tools are passed through.",
     });
+    expect(profiles.get("bad-thinking")).toMatchObject({
+      name: "bad-thinking",
+      thinking: "enormous",
+      systemPrompt: "Ignored.",
+    });
+    expect(profiles.get("bad-model")).toMatchObject({
+      name: "bad-model",
+      model: "not-a-provider-model",
+      systemPrompt: "Ignored.",
+    });
+    expect(profiles.get("empty-body")).toMatchObject({
+      name: "empty-body",
+      description: "Valid frontmatter but empty body.",
+      systemPrompt: undefined,
+    });
     expect(profiles.has("Bad Name")).toBe(false);
     expect(profiles.has("missing-description")).toBe(false);
-    expect(profiles.has("bad-thinking")).toBe(false);
-    expect(profiles.has("bad-model")).toBe(false);
     expect(profiles.has("blank-tools")).toBe(false);
     expect(profiles.has("null-tools")).toBe(false);
     expect(profiles.has("empty-string-tools")).toBe(false);
     expect(profiles.has("list-tools")).toBe(false);
     expect(profiles.has("empty-list-tools")).toBe(false);
     expect(profiles.has("malformed-yaml")).toBe(false);
-    expect(profiles.has("empty-body")).toBe(false);
     expect(profiles.has("general-purpose")).toBe(true);
     expect(profiles.has("explorer")).toBe(true);
   });
@@ -572,13 +584,13 @@ backend: other
 ---
 
 Ignored.`);
-    writeFileSync(join(subagentsDir, "bad-codex-model.md"), `---
-description: Invalid Codex model.
+    writeFileSync(join(subagentsDir, "custom-codex-model.md"), `---
+description: Arbitrary Codex model.
 backend: codex
 model: "gpt 5.4"
 ---
 
-Ignored.`);
+Arbitrary Codex model prompt.`);
 
     const profiles = getSubagentProfiles(agentDir);
 
@@ -590,8 +602,14 @@ Ignored.`);
       thinking: "low",
       systemPrompt: "Codex reviewer prompt.",
     });
+    expect(profiles.get("custom-codex-model")).toMatchObject({
+      name: "custom-codex-model",
+      description: "Arbitrary Codex model.",
+      backend: "codex",
+      model: "gpt 5.4",
+      systemPrompt: "Arbitrary Codex model prompt.",
+    });
     expect(profiles.has("bad-backend")).toBe(false);
-    expect(profiles.has("bad-codex-model")).toBe(false);
   });
 
   it("builds codex args and estimates listed-model costs", () => {
@@ -612,16 +630,13 @@ Ignored.`);
       "exec",
       "--json",
       "--skip-git-repo-check",
-      "--sandbox",
-      "danger-full-access",
-      "--ask-for-approval",
-      "never",
+      "--dangerously-bypass-approvals-and-sandbox",
       "-c",
       "developer_instructions=\"You are a Codex reviewer.\"",
       "--model",
       "gpt-5.4-mini",
       "-c",
-      "model_reasoning_effort=\"high\"",
+      "model_reasoning_effort=\"xhigh\"",
       "--output-schema",
       "/tmp/schema.json",
       "--",
@@ -782,13 +797,14 @@ thinking: xhigh
 ---
 
 Claude reviewer prompt.`);
-    writeFileSync(join(subagentsDir, "bad-claude-model.md"), `---
-description: Invalid Claude model.
+    writeFileSync(join(subagentsDir, "custom-claude-model.md"), `---
+description: Arbitrary Claude model.
 backend: claude
 model: "not a model"
+thinking: max
 ---
 
-Ignored.`);
+Arbitrary Claude model prompt.`);
 
     const profiles = getSubagentProfiles(agentDir);
 
@@ -800,7 +816,14 @@ Ignored.`);
       thinking: "xhigh",
       systemPrompt: "Claude reviewer prompt.",
     });
-    expect(profiles.has("bad-claude-model")).toBe(false);
+    expect(profiles.get("custom-claude-model")).toMatchObject({
+      name: "custom-claude-model",
+      description: "Arbitrary Claude model.",
+      backend: "claude",
+      model: "not a model",
+      thinking: "max",
+      systemPrompt: "Arbitrary Claude model prompt.",
+    });
   });
 
   it("builds claude args and maps reported usage/cost", () => {
@@ -829,7 +852,7 @@ Ignored.`);
       "--model",
       "sonnet",
       "--effort",
-      "low",
+      "minimal",
       "--json-schema",
       JSON.stringify(schema),
     ]);
@@ -874,6 +897,13 @@ Ignored.`);
   });
 
   it("extracts claude final text from result, structured output, and assistant text", () => {
+    expect(extractClaudeError({
+      type: "result",
+      subtype: "success",
+      is_error: true,
+      api_error_status: 401,
+      result: "Failed to authenticate. API Error: 401 Invalid bearer token",
+    })).toBe("Claude failed: Failed to authenticate. API Error: 401 Invalid bearer token");
     expect(extractClaudeFinalText({
       type: "result",
       subtype: "success",
@@ -1208,7 +1238,7 @@ This should not be advertised or launched.`);
     await session.prompt("Run one bad and one good subagent.");
 
     const serialized = JSON.stringify(rootContinuationContext?.messages);
-    expect(serialized).toContain("Unknown subagent_type");
+    expect(serialized).toContain("Profile model not found: ghost/nope");
     expect(serialized).toContain("valid child ran");
     expect(serialized).not.toContain("Maximum subagent concurrency reached");
 

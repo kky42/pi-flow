@@ -137,11 +137,11 @@ You are a careful code reviewer. Focus on correctness, tests, regressions, and m
 Fields:
 
 - `description` is required and is shown in the available-agent roster.
-- `backend` is optional. Omit it or set `pi` for an in-process pi child session. Set `codex` to run the profile through `codex exec --json --sandbox danger-full-access --ask-for-approval never` in the same working directory. Set `claude` to run the profile through `claude -p --output-format stream-json --verbose --no-session-persistence --dangerously-skip-permissions` in the same working directory. External CLI backends intentionally run in yolo/no-approval mode; only use them in trusted repositories.
+- `backend` is optional. Omit it or set `pi` for an in-process pi child session. Set `codex` to run the profile through `codex exec --json --dangerously-bypass-approvals-and-sandbox` in the same working directory. Set `claude` to run the profile through `claude -p --output-format stream-json --verbose --no-session-persistence --dangerously-skip-permissions` in the same working directory. External CLI backends intentionally run in yolo/no-approval mode; only use them in trusted repositories.
 - `tools` is optional for `backend: pi`; omit it to keep the default child-session tools. When present, it must be a non-empty comma-separated string such as `tools: read, grep, find`; that list becomes the child-session tool allowlist. Tool names can target built-ins (`read`, `bash`, `edit`, `write`, `grep`, `find`, `ls`) and any custom or extension tools loaded into that child session. Unknown tool names are passed to pi, which may ignore them; `Agent` is always stripped from child sessions. External CLI profiles use their CLI's own tool/permission surface.
-- `model` is optional; omit it or set `inherit` to use the caller's model for `backend: pi`, Codex CLI's configured default for `backend: codex`, or Claude Code's configured default for `backend: claude`. Pi-backed explicit values must use exact `provider/model-id` syntax. Codex- and Claude-backed explicit values are passed as bare CLI model values such as `gpt-5.4-mini`, `sonnet`, or a full Claude model name.
-- `thinking` is optional; omit it or set `inherit` to use the caller's thinking level. For Codex-backed profiles, `off` is omitted, `xhigh` maps to `high`, and other levels are passed as `model_reasoning_effort`. For Claude-backed profiles, `off` is omitted, `minimal` maps to `low`, and other levels are passed as `--effort`.
-- The markdown body is required. Pi-backed profiles append it to the child agent's system prompt; Codex-backed profiles pass it as Codex `developer_instructions`; Claude-backed profiles pass it as Claude Code `--append-system-prompt`.
+- `model` is optional; omit it or set `inherit` to use the caller's model for `backend: pi`, Codex CLI's configured default for `backend: codex`, or Claude Code's configured default for `backend: claude`. Explicit model strings are kept as written. Pi-backed profiles still resolve the string through pi's model registry at launch; external CLI profiles pass it directly to the target CLI.
+- `thinking` is optional; omit it or set `inherit` to use the caller's thinking level. Explicit thinking strings are kept as written: Codex-backed profiles pass them as `model_reasoning_effort`, and Claude-backed profiles pass them as `--effort`.
+- The markdown body is optional. When present, pi-backed profiles append it to the child agent's system prompt, Codex-backed profiles pass it as Codex `developer_instructions`, and Claude-backed profiles pass it as Claude Code `--append-system-prompt`. When omitted, no extra profile system prompt is added.
 
 Codex example:
 
@@ -169,7 +169,7 @@ thinking: high
 You are a careful Claude Code reviewer. Focus on correctness, tests, regressions, and maintainability.
 ```
 
-Files are ignored when the filename is not a valid lowercase kebab-case agent name, the frontmatter is invalid, `description` is missing, `backend` is unknown, the body is empty, `model` is malformed, `tools` is missing a non-empty comma-separated value after the field is present, or `thinking` is not one of `off`, `minimal`, `low`, `medium`, `high`, or `xhigh`. Pi-backed profiles with syntactically valid but unavailable `model` values are not advertised in the active agent roster; external CLI model availability is checked by the target CLI at launch.
+Files are ignored when the filename is not a valid lowercase kebab-case agent name, the frontmatter is invalid, `description` is missing, `backend` is unknown, or `tools` is missing a non-empty comma-separated value after the field is present. `model` and `thinking` strings are not syntax-validated by the profile loader; backend-specific failures surface at launch.
 
 ## Notes
 

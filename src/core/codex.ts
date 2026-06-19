@@ -93,13 +93,6 @@ export function codexUsageToSubagentUsage(model: string | undefined, usage: Code
   };
 }
 
-function normalizeCodexReasoningEffort(thinkingLevel: ThinkingLevel | undefined): string | undefined {
-  if (!thinkingLevel || thinkingLevel === "off") {
-    return undefined;
-  }
-  return thinkingLevel === "xhigh" ? "high" : thinkingLevel;
-}
-
 export function buildCodexArgs({
   prompt,
   profile,
@@ -115,10 +108,7 @@ export function buildCodexArgs({
     "exec",
     "--json",
     "--skip-git-repo-check",
-    "--sandbox",
-    "danger-full-access",
-    "--ask-for-approval",
-    "never",
+    "--dangerously-bypass-approvals-and-sandbox",
   ];
   if (profile.systemPrompt) {
     args.push("-c", buildConfigOverrideArg("developer_instructions", profile.systemPrompt));
@@ -126,9 +116,8 @@ export function buildCodexArgs({
   if (profile.model) {
     args.push("--model", profile.model);
   }
-  const reasoningEffort = normalizeCodexReasoningEffort(thinkingLevel);
-  if (reasoningEffort) {
-    args.push("-c", buildConfigOverrideArg("model_reasoning_effort", reasoningEffort));
+  if (thinkingLevel) {
+    args.push("-c", buildConfigOverrideArg("model_reasoning_effort", thinkingLevel));
   }
   if (outputSchemaPath) {
     args.push("--output-schema", outputSchemaPath);

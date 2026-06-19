@@ -29,13 +29,6 @@ function asFiniteNumber(value: unknown): number | undefined {
   return Number.isFinite(number) ? number : undefined;
 }
 
-function normalizeClaudeEffort(thinkingLevel: ThinkingLevel | undefined): string | undefined {
-  if (!thinkingLevel || thinkingLevel === "off") {
-    return undefined;
-  }
-  return thinkingLevel === "minimal" ? "low" : thinkingLevel;
-}
-
 export function buildClaudeArgs({
   profile,
   thinkingLevel,
@@ -59,9 +52,8 @@ export function buildClaudeArgs({
   if (profile.model) {
     args.push("--model", profile.model);
   }
-  const effort = normalizeClaudeEffort(thinkingLevel);
-  if (effort) {
-    args.push("--effort", effort);
+  if (thinkingLevel) {
+    args.push("--effort", thinkingLevel);
   }
   if (outputSchema !== undefined && outputSchema !== null) {
     args.push("--json-schema", JSON.stringify(outputSchema));
@@ -232,7 +224,11 @@ export function extractClaudeError(event: Record<string, unknown>): string | und
   if (event.type === "result" && event.is_error === true) {
     const errors = Array.isArray(event.errors) ? event.errors : [];
     const first = errors.find((candidate) => typeof candidate === "string");
-    return `Claude failed: ${first ?? (typeof event.subtype === "string" ? event.subtype : "turn failed")}`;
+    const result = typeof event.result === "string" && event.result.trim() ? event.result.trim() : undefined;
+    const apiStatus = event.api_error_status !== undefined && event.api_error_status !== null
+      ? `API error ${String(event.api_error_status)}`
+      : undefined;
+    return `Claude failed: ${first ?? result ?? apiStatus ?? (typeof event.subtype === "string" ? event.subtype : "turn failed")}`;
   }
   if (event.type === "error") {
     return `Claude error: ${typeof event.message === "string" ? event.message : "unknown error"}`;

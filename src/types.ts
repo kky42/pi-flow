@@ -1,6 +1,6 @@
 export type SubagentType = string;
 export type SubagentBackend = "pi" | "codex" | "claude";
-export type ThinkingLevel = "off" | "minimal" | "low" | "medium" | "high" | "xhigh";
+export type ThinkingLevel = string;
 
 export interface SubagentProfile {
   name: string;

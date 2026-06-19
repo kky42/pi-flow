@@ -25,12 +25,7 @@ export function resolveProfileModel(profile: SubagentProfile, ctx: ExtensionCont
 
 export function filterProfilesForModelRegistry(
   profiles: Map<string, SubagentProfile>,
-  modelRegistry: ModelRegistry | undefined,
+  _modelRegistry: ModelRegistry | undefined,
 ): Map<string, SubagentProfile> {
-  if (!modelRegistry) {
-    return profiles;
-  }
-  return new Map(
-    [...profiles].filter(([, profile]) => !usesPiBackend(profile) || !profile.model || Boolean(findProfileModel(profile, modelRegistry))),
-  );
+  return profiles;
 }

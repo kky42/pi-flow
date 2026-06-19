@@ -39,7 +39,7 @@ export interface SpawnSubagentParams {
   prompt: string;
   profile: SubagentProfile;
   model?: NonNullable<ExtensionContext["model"]>;
-  thinkingLevel: NonNullable<Parameters<typeof createAgentSession>[0]>["thinkingLevel"];
+  thinkingLevel: string | undefined;
   ctx: ExtensionContext;
   signal: AbortSignal | undefined;
   progressEnabled: boolean;
@@ -143,7 +143,7 @@ export async function spawnSubagent(params: SpawnSubagentParams): Promise<AgentT
     cwd,
     agentDir,
     model,
-    thinkingLevel,
+    thinkingLevel: thinkingLevel as NonNullable<Parameters<typeof createAgentSession>[0]>["thinkingLevel"],
     modelRegistry: ctx.modelRegistry,
     settingsManager,
     sessionManager: SessionManager.inMemory(cwd),
