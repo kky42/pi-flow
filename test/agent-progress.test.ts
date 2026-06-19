@@ -1,0 +1,230 @@
+import { chmodSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
+import {
+  AuthStorage,
+  createAgentSession,
+  DefaultResourceLoader,
+  ModelRegistry,
+  SessionManager,
+  SettingsManager,
+  type ExtensionContext,
+} from "@earendil-works/pi-coding-agent";
+import {
+  fauxAssistantMessage,
+  fauxToolCall,
+  registerFauxProvider,
+  type Context,
+  type Model,
+  type SimpleStreamOptions,
+} from "../node_modules/@earendil-works/pi-coding-agent/node_modules/@earendil-works/pi-ai/dist/index.js";
+import { describe, expect, it, vi } from "vitest";
+import { createSubagentExtension } from "../src/pi-subagent.ts";
+import { getSubagentProfiles, loadBuiltinSubagentProfiles } from "../src/profiles.ts";
+import { buildClaudeArgs, claudeUsageToSubagentUsage, extractClaudeCostUsd, extractClaudeError, extractClaudeFinalText, extractClaudeUsage, spawnClaudeSubagent } from "../src/core/claude.ts";
+import { buildCodexArgs, codexUsageToSubagentUsage, estimateCodexCostUsd, extractCodexFinalText, spawnCodexSubagent } from "../src/core/codex.ts";
+import { packageRoot, setupPiSubagentTestHarness } from "./helpers/pi-subagent-harness.ts";
+
+describe("pi-subagent progress and status", () => {
+  let tempDir = "";
+  let cwd = "";
+  let agentDir = "";
+  let originalPathEnv: string | undefined;
+  let registrations: Array<{ unregister: () => void }> = [];
+
+  const {
+    trackSession,
+    disposeSession,
+    createSession,
+    delegateOnce,
+    makeMockTheme,
+    stripAnsi,
+    renderToText,
+    formatTestTokens,
+    makeExecutionContext,
+    getToolNames,
+  } = setupPiSubagentTestHarness((state) => {
+    tempDir = state.tempDir;
+    cwd = state.cwd;
+    agentDir = state.agentDir;
+    originalPathEnv = state.originalPathEnv;
+    registrations = state.registrations;
+  });
+  it("does not emit progress updates when no interactive UI is bound", async () => {
+    const { session, registration } = await createSession();
+    const updateEvents: unknown[] = [];
+
+    session.subscribe((event) => {
+      if (event.type === "tool_execution_update") {
+        updateEvents.push(event);
+      }
+    });
+
+    registration.setResponses([
+      fauxAssistantMessage([fauxToolCall("Agent", {
+        description: "Research config",
+        prompt: "Inspect config loading.",
+      })], { stopReason: "toolUse" }),
+      fauxAssistantMessage("config found"),
+      fauxAssistantMessage("done"),
+    ]);
+
+    await session.prompt("Delegate config research.");
+
+    expect(updateEvents).toEqual([]);
+
+    disposeSession(session);
+  });
+
+  it("does not emit compact UI progress updates in RPC mode", async () => {
+    const { session, registration, model, modelRegistry } = await createSession();
+    const tool = session.getToolDefinition("Agent") as any;
+    const updateEvents: unknown[] = [];
+
+    registration.setResponses([
+      fauxAssistantMessage("config found"),
+    ]);
+
+    await tool.execute(
+      "rpc-agent-call",
+      {
+        description: "Research config",
+        prompt: "Inspect config loading.",
+      },
+      undefined,
+      (result: unknown) => updateEvents.push(result),
+      makeExecutionContext({ hasUI: true, model, modelRegistry }),
+    );
+
+    expect(updateEvents).toEqual([]);
+
+    disposeSession(session);
+  });
+
+  it("does not start the child prompt when the tool signal is already aborted", async () => {
+    const { session, registration, model, modelRegistry } = await createSession();
+    const tool = session.getToolDefinition("Agent") as any;
+    const controller = new AbortController();
+    let childContext: Context | undefined;
+
+    registration.setResponses([
+      (context) => {
+        childContext = context;
+        return fauxAssistantMessage("should not run");
+      },
+    ]);
+
+    controller.abort();
+
+    const result = await tool.execute(
+      "pre-aborted-agent-call",
+      {
+        description: "Research config",
+        prompt: "Inspect config loading.",
+      },
+      controller.signal,
+      undefined,
+      makeExecutionContext({ hasUI: false, model, modelRegistry }),
+    );
+
+    expect(result.details.status).toBe("error");
+    expect(result.details.backend).toBe("pi");
+    expect(result.details.error).toContain("aborted before prompt start");
+    expect(childContext).toBeUndefined();
+    expect(registration.getPendingResponseCount()).toBe(1);
+
+    disposeSession(session);
+  });
+
+  it("keeps same-description root parallel progress nodes separate", async () => {
+    const { session, registration, model, modelRegistry } = await createSession();
+    const tool = session.getToolDefinition("Agent") as any;
+
+    registration.setResponses([
+      fauxAssistantMessage("first root child done"),
+    ]);
+
+    const result = await tool.execute(
+      "root-progress-a",
+      {
+        description: "Same audit",
+        prompt: "First root task.",
+      },
+      undefined,
+      () => {},
+      makeExecutionContext({ hasUI: true, model, modelRegistry, tui: true }),
+    );
+
+    expect(result.details.backend).toBe("pi");
+    expect(result.details.progress?.id).toBe("root-progress-a");
+    expect(result.details.progress?.description).toBe("Same audit");
+    expect(result.details.progress?.backend).toBe("pi");
+    expect(result.details.usage?.input).toBeGreaterThan(0);
+    expect(result.details.usage?.output).toBeGreaterThan(0);
+    expect(result.details.progress?.usage).toEqual(result.details.usage);
+
+    disposeSession(session);
+  });
+
+  it("updates a cumulative pi-subagents status line from child usage", async () => {
+    const { session, registration, model, modelRegistry } = await createSession();
+    const tool = session.getToolDefinition("Agent") as any;
+    const statuses: Array<{ key: string; text: string | undefined }> = [];
+    const context = makeExecutionContext({
+      hasUI: true,
+      model,
+      modelRegistry,
+      onStatus: (key, text) => statuses.push({ key, text }),
+    });
+
+    registration.setResponses([
+      fauxAssistantMessage("first child done"),
+      fauxAssistantMessage("second child done"),
+    ]);
+
+    const first = await tool.execute(
+      "usage-status-a",
+      {
+        description: "First child",
+        prompt: "First child task.",
+      },
+      undefined,
+      undefined,
+      context,
+    );
+    const second = await tool.execute(
+      "usage-status-b",
+      {
+        description: "Second child",
+        prompt: "Second child task.",
+      },
+      undefined,
+      undefined,
+      context,
+    );
+
+    const final = statuses.filter((status) => status.key === "pi-subagents").at(-1)?.text ?? "";
+    const usage = {
+      input: first.details.usage.input + second.details.usage.input,
+      output: first.details.usage.output + second.details.usage.output,
+      cacheRead: first.details.usage.cacheRead + second.details.usage.cacheRead,
+      cacheWrite: first.details.usage.cacheWrite + second.details.usage.cacheWrite,
+      cost: first.details.usage.cost + second.details.usage.cost,
+      latestCacheHitRate: second.details.usage.latestCacheHitRate,
+    };
+    const expected = `pi-subagents ↑${formatTestTokens(usage.input)} ↓${formatTestTokens(usage.output)}`;
+
+    expect(statuses.some((status) => status.key === "pi-subagents" && status.text)).toBe(true);
+    expect(final).toContain(expected);
+    if (usage.cacheRead) {
+      expect(final).toContain(`R${formatTestTokens(usage.cacheRead)}`);
+    }
+    if (usage.cacheWrite) {
+      expect(final).toContain(`W${formatTestTokens(usage.cacheWrite)}`);
+    }
+    if (usage.latestCacheHitRate !== undefined) {
+      expect(final).toContain(`CH${usage.latestCacheHitRate.toFixed(1)}%`);
+    }
+
+    disposeSession(session);
+  });
+});

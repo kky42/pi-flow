@@ -1,7 +1,8 @@
 import { existsSync, lstatSync, readdirSync, readFileSync, realpathSync, statSync } from "node:fs";
 import { extname, isAbsolute, join, relative, resolve } from "node:path";
 import { getAgentDir } from "@earendil-works/pi-coding-agent";
-import { parseWorkflowScript, type WorkflowMeta } from "./runtime.ts";
+import { parseWorkflowScript } from "./script-validation.ts";
+import type { WorkflowMeta } from "./types.ts";
 
 const VALID_SAVED_WORKFLOW_NAME = /^[a-z0-9][a-z0-9_-]*$/;
 const WORKFLOW_FILE_EXTENSION = ".js";

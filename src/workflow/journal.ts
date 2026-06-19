@@ -1,7 +1,8 @@
 import { randomUUID } from "node:crypto";
 import { appendFile, mkdir, readFile, writeFile } from "node:fs/promises";
 import { basename, dirname, extname, join } from "node:path";
-import { hashStableValue, type WorkflowAgentResultEvent, type WorkflowCachedAgentResult } from "./runtime.ts";
+import { hashStableValue } from "./replay-cache.ts";
+import type { WorkflowAgentResultEvent, WorkflowCachedAgentResult } from "./types.ts";
 
 const JOURNAL_VERSION = 1;
 const RUN_ID_PREFIX = "wf_";

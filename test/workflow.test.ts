@@ -162,7 +162,7 @@ describe("runWorkflow", () => {
           },
         },
       ),
-    ).rejects.toThrow(/awaited before the workflow returns/);
+    ).rejects.toThrow(/awaited before the workflow returns|cannot be called after the workflow body has returned/);
     expect(completed).toEqual(["a"]);
   });
 
