@@ -690,9 +690,9 @@ describe("workflow tool rendering", () => {
       agentCount: 3,
       phases: ["scan"],
       agents: [
-        { index: 1, label: "alpha", subagentType: "explorer", status: "running" },
-        { index: 2, label: "beta", phase: "scan", status: "done" },
-        { index: 3, label: "gamma", status: "error" },
+        { index: 1, label: "alpha", subagentType: "explorer", backend: "pi", status: "running" },
+        { index: 2, label: "beta", phase: "scan", subagentType: "codex-reviewer", backend: "codex", status: "done" },
+        { index: 3, label: "gamma", subagentType: "claude-reviewer", backend: "claude", status: "error" },
       ],
       logs: [],
     };
@@ -703,10 +703,10 @@ describe("workflow tool rendering", () => {
     expect(text).toContain("1 failed");
     // scan phase is complete (beta done) -> ✓ header; unphased bucket still running.
     expect(text).toContain("✓ scan 1/1");
-    expect(text).toContain("✓ Agent(agent, beta, #2)");
+    expect(text).toContain("✓ Codex Agent(codex-reviewer, beta, #2)");
     expect(text).toContain("▶ unphased 0/2 · 1 running · 1 failed");
-    expect(text).toContain("Agent(explorer, alpha, #1)");
-    expect(text).toContain("✗ Agent(agent, gamma, #3)");
+    expect(text).toContain("Pi Agent(explorer, alpha, #1)");
+    expect(text).toContain("✗ Claude Agent(claude-reviewer, gamma, #3)");
     // declared phase renders before the unphased bucket.
     expect(text.indexOf("scan")).toBeLessThan(text.indexOf("unphased"));
   });

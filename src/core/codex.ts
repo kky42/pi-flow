@@ -355,7 +355,7 @@ export async function spawnCodexSubagent(params: {
 }): Promise<AgentToolResult> {
   const subagentType = params.profile.name;
   const taskPrompt = params.appendInstructions ? `${params.prompt}\n\n${params.appendInstructions}` : params.prompt;
-  const progress = params.progressEnabled ? createProgressNode(params.toolCallId, params.description, subagentType) : undefined;
+  const progress = params.progressEnabled ? createProgressNode(params.toolCallId, params.description, subagentType, "running", params.profile.backend) : undefined;
   let latestUsage = emptyUsage(params.profile.model);
   let resultText = "";
   let stderrText = "";
@@ -381,6 +381,7 @@ export async function spawnCodexSubagent(params: {
     params.onProgress(textResult(`Subagent "${params.description}" (${subagentType}) is running.`, {
       description: params.description,
       subagentType,
+      backend: params.profile.backend,
       status: progress.status,
       result: progress.result,
       error: progress.error,
@@ -574,6 +575,7 @@ export async function spawnCodexSubagent(params: {
     return textResult(`Subagent "${params.description}" (${subagentType}) completed:\n\n${result}`, {
       description: params.description,
       subagentType,
+      backend: params.profile.backend,
       status: "completed",
       result,
       usage: latestUsage,
@@ -594,6 +596,7 @@ export async function spawnCodexSubagent(params: {
     return textResult(`Subagent "${params.description}" (${subagentType}) failed: ${message}`, {
       description: params.description,
       subagentType,
+      backend: params.profile.backend,
       status: "error",
       error: message,
       usage: latestUsage,

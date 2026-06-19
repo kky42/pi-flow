@@ -32,6 +32,7 @@ export interface WorkflowAgentSnapshot {
   label: string;
   phase?: string;
   subagentType?: string;
+  backend?: SubagentBackend;
   status: "running" | "done" | "error";
 }
 
@@ -74,6 +75,7 @@ export interface SubagentProgressNode {
   id: string;
   description: string;
   subagentType: SubagentType | "unknown";
+  backend?: SubagentBackend;
   status: "running" | "completed" | "rejected" | "error";
   startedAt: number;
   endedAt?: number;
@@ -87,6 +89,7 @@ export interface SubagentProgressNode {
 export interface SubagentToolDetails {
   description: string;
   subagentType: SubagentType | "unknown";
+  backend?: SubagentBackend;
   status: "running" | "completed" | "rejected" | "error";
   result?: string;
   error?: string;

@@ -1,5 +1,6 @@
 import type { AgentSessionEvent } from "@earendil-works/pi-coding-agent";
 import type {
+  SubagentBackend,
   SubagentProgressNode,
   SubagentToolDetails,
   SubagentType,
@@ -24,11 +25,13 @@ export function createProgressNode(
   description: string,
   subagentType: SubagentType,
   status: SubagentProgressNode["status"] = "running",
+  backend?: SubagentBackend,
 ): SubagentProgressNode {
   return {
     id,
     description,
     subagentType,
+    ...(backend ? { backend } : {}),
     status,
     startedAt: Date.now(),
     activity: [],

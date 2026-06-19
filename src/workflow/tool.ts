@@ -9,6 +9,7 @@ import {
 import { Container, Text } from "@earendil-works/pi-tui";
 import { Type, type Static } from "typebox";
 import type { ConcurrencyLimiter } from "../core/concurrency.ts";
+import { getBackendAgentLabel } from "../core/display.ts";
 import { filterProfilesForModelRegistry, resolveProfileModel, usesPiBackend } from "../core/model.ts";
 import { CHILD_EXCLUDED_TOOLS, spawnSubagent } from "../core/spawn.ts";
 import { getSubagentProfiles } from "../profiles.ts";
@@ -489,7 +490,14 @@ export function createWorkflowTool(
             emit();
           },
           onAgentStart: (event) => {
-            snapshot.agents.push({ index: event.index, label: event.label, phase: event.phase, subagentType: event.subagentType, status: event.cached ? "done" : "running" });
+            snapshot.agents.push({
+              index: event.index,
+              label: event.label,
+              phase: event.phase,
+              subagentType: event.subagentType,
+              backend: profiles.get(event.subagentType)?.backend,
+              status: event.cached ? "done" : "running",
+            });
             snapshot.agentCount = snapshot.agents.length;
             if (event.cached) {
               snapshot.cachedAgentCount = (snapshot.cachedAgentCount ?? 0) + 1;
@@ -578,11 +586,11 @@ function agentMarker(agent: WorkflowAgentSnapshot, theme: Theme, frame: number):
   return theme.fg("accent", SPINNER_FRAMES[frame % SPINNER_FRAMES.length]);
 }
 
-// `<marker> Agent(<type>, <label>, #<index>)`. The marker is colored by status;
+// `<marker> <Backend> Agent(<type>, <label>, #<index>)`. The marker is colored by status;
 // the body stays muted (error rows go red so failures read at a glance).
 function renderAgentRow(agent: WorkflowAgentSnapshot, theme: Theme, frame: number, indent: string): Text {
   const type = agent.subagentType ?? "agent";
-  const body = `Agent(${type}, ${agent.label}, #${agent.index})`;
+  const body = `${getBackendAgentLabel(agent.backend)}(${type}, ${agent.label}, #${agent.index})`;
   const bodyColor = agent.status === "error" ? "error" : "muted";
   return new Text(`${indent}${agentMarker(agent, theme, frame)} ${theme.fg(bodyColor, body)}`, 0, 0);
 }

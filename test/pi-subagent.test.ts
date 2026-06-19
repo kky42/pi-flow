@@ -764,6 +764,7 @@ setTimeout(() => {
     });
 
     expect(result.details.status).toBe("error");
+    expect(result.details.backend).toBe("codex");
     expect(result.details.error).toContain("aborted before prompt start");
     expect(signal.addEventListener).toHaveBeenCalledWith("abort", expect.any(Function), { once: true });
     await new Promise((resolve) => setTimeout(resolve, 900));
@@ -1002,6 +1003,7 @@ setTimeout(() => {
     });
 
     expect(result.details.status).toBe("error");
+    expect(result.details.backend).toBe("claude");
     expect(result.details.error).toContain("aborted before prompt start");
     expect(signal.addEventListener).toHaveBeenCalledWith("abort", expect.any(Function), { once: true });
     await new Promise((resolve) => setTimeout(resolve, 900));
@@ -1291,6 +1293,7 @@ This should not be advertised or launched.`);
     );
 
     expect(result.details.status).toBe("error");
+    expect(result.details.backend).toBe("pi");
     expect(result.details.error).toContain("aborted before prompt start");
     expect(childContext).toBeUndefined();
     expect(registration.getPendingResponseCount()).toBe(1);
@@ -1317,8 +1320,10 @@ This should not be advertised or launched.`);
       makeExecutionContext({ hasUI: true, model, modelRegistry, tui: true }),
     );
 
+    expect(result.details.backend).toBe("pi");
     expect(result.details.progress?.id).toBe("root-progress-a");
     expect(result.details.progress?.description).toBe("Same audit");
+    expect(result.details.progress?.backend).toBe("pi");
     expect(result.details.usage?.input).toBeGreaterThan(0);
     expect(result.details.usage?.output).toBeGreaterThan(0);
     expect(result.details.progress?.usage).toEqual(result.details.usage);
@@ -1744,7 +1749,7 @@ This should not be advertised or launched.`);
         { executionStarted: false },
       ),
     );
-    expect(callText).toContain("Agent");
+    expect(callText).toContain("Pi Agent");
     expect(callText).toContain("explorer");
     expect(callText).toContain("Find auth files");
 
@@ -1755,7 +1760,7 @@ This should not be advertised or launched.`);
         { executionStarted: false },
       ),
     );
-    expect(partialCallText).toContain("Agent");
+    expect(partialCallText).toContain("Pi Agent");
     expect(partialCallText).not.toContain("undefined");
 
     const buildResult = (status: "completed" | "error" | "rejected") => ({
@@ -1763,13 +1768,14 @@ This should not be advertised or launched.`);
       details: {
         description: "Find auth files",
         subagentType: "explorer" as const,
+        backend: "pi" as const,
         status,
         ...(status === "completed" ? { result: "ok" } : { error: "fail" }),
       },
     });
 
     const completedText = renderToText(captured.renderResult(buildResult("completed"), {}, theme, {}));
-    expect(completedText).toContain("Agent");
+    expect(completedText).toContain("Pi Agent");
     expect(completedText).toContain("explorer");
     expect(completedText).toContain("Find auth files");
     expect(completedText).toContain("completed");
@@ -1785,6 +1791,7 @@ This should not be advertised or launched.`);
       details: {
         description: "Optimize task253",
         subagentType: "general-purpose" as const,
+        backend: "pi" as const,
         status: "rejected" as const,
         error: "Maximum subagent concurrency reached",
       },
@@ -1833,11 +1840,13 @@ This should not be advertised or launched.`);
         details: {
           description: "Research repo",
           subagentType: "explorer" as const,
+          backend: "pi" as const,
           status: "running" as const,
           progress: {
             id: "root-progress",
             description: "Research repo",
             subagentType: "explorer" as const,
+            backend: "pi" as const,
             status: "running" as const,
             startedAt: now - 2000,
             activity: ["Read src/types.ts", "Read app.py", "Read config.yaml"],
@@ -1856,7 +1865,7 @@ This should not be advertised or launched.`);
 
       const text = renderToText(captured.renderResult(result, {}, theme, {}));
 
-      expect(text).toContain("Agent(explorer: Research repo)");
+      expect(text).toContain("Pi Agent(explorer: Research repo)");
       expect(text).toContain("running 2s ↑81k ↓4.9k R602k CH94.7% $0.850");
       expect(text).toContain("... +2 earlier events");
       expect(text).toContain("Read src/types.ts");
@@ -2224,6 +2233,7 @@ return await agent('compute the answer', {
       );
 
       expect(result.details.status).toBe("completed");
+      expect(result.details.agents[0]?.backend).toBe("claude");
       expect(result.details.result).toEqual({ answer: "42", confidence: 0.9 });
       const claudeRun = JSON.parse(readFileSync(argsPath, "utf8"));
       expect(claudeRun.args).toContain("--json-schema");
@@ -2287,6 +2297,7 @@ return [a, b];`;
       expect(result.details.status).toBe("completed");
       expect(result.details.phases).toEqual(["scan", "report"]);
       expect(result.details.agents.map((agent: any) => agent.status)).toEqual(["done", "done"]);
+      expect(result.details.agents.map((agent: any) => agent.backend)).toEqual(["pi", "pi"]);
       expect(result.details.result).toEqual(["first done", "second done"]);
 
       // Progress was streamed incrementally, not just at the end.

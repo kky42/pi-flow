@@ -351,7 +351,7 @@ export async function spawnClaudeSubagent(params: {
 }): Promise<AgentToolResult> {
   const subagentType = params.profile.name;
   const taskPrompt = params.appendInstructions ? `${params.prompt}\n\n${params.appendInstructions}` : params.prompt;
-  const progress = params.progressEnabled ? createProgressNode(params.toolCallId, params.description, subagentType) : undefined;
+  const progress = params.progressEnabled ? createProgressNode(params.toolCallId, params.description, subagentType, "running", params.profile.backend) : undefined;
   let latestRawUsage = emptyTokenUsage();
   let latestCostUsd: number | undefined;
   let latestUsage = claudeUsageToSubagentUsage(latestRawUsage, latestCostUsd);
@@ -377,6 +377,7 @@ export async function spawnClaudeSubagent(params: {
     params.onProgress(textResult(`Subagent "${params.description}" (${subagentType}) is running.`, {
       description: params.description,
       subagentType,
+      backend: params.profile.backend,
       status: progress.status,
       result: progress.result,
       error: progress.error,
@@ -556,6 +557,7 @@ export async function spawnClaudeSubagent(params: {
     return textResult(`Subagent "${params.description}" (${subagentType}) completed:\n\n${result}`, {
       description: params.description,
       subagentType,
+      backend: params.profile.backend,
       status: "completed",
       result,
       usage: latestUsage,
@@ -576,6 +578,7 @@ export async function spawnClaudeSubagent(params: {
     return textResult(`Subagent "${params.description}" (${subagentType}) failed: ${message}`, {
       description: params.description,
       subagentType,
+      backend: params.profile.backend,
       status: "error",
       error: message,
       usage: latestUsage,

@@ -92,6 +92,7 @@ export async function spawnSubagent(params: SpawnSubagentParams): Promise<AgentT
     return textResult(`Subagent "${params.description}" (${params.profile.name}) failed: No model is selected.`, {
       description: params.description,
       subagentType: params.profile.name,
+      backend: params.profile.backend,
       status: "error",
       error: "No model is selected",
     });
@@ -116,7 +117,7 @@ export async function spawnSubagent(params: SpawnSubagentParams): Promise<AgentT
   const toolAllowList =
     profile.tools !== undefined ? [...profile.tools, ...customTools.map((tool) => tool.name)] : undefined;
   const taskPrompt = params.appendInstructions ? `${prompt}\n\n${params.appendInstructions}` : prompt;
-  const progress = progressEnabled ? createProgressNode(toolCallId, description, subagentType) : undefined;
+  const progress = progressEnabled ? createProgressNode(toolCallId, description, subagentType, "running", profile.backend) : undefined;
 
   const agentDir = getAgentDir();
   const cwd = ctx.cwd;
@@ -177,6 +178,7 @@ export async function spawnSubagent(params: SpawnSubagentParams): Promise<AgentT
     onProgress(textResult(`Subagent "${description}" (${subagentType}) is running.`, {
       description,
       subagentType,
+      backend: profile.backend,
       status: progress.status,
       result: progress.result,
       error: progress.error,
@@ -250,6 +252,7 @@ export async function spawnSubagent(params: SpawnSubagentParams): Promise<AgentT
     return textResult(`Subagent "${description}" (${subagentType}) completed:\n\n${result}`, {
       description,
       subagentType,
+      backend: profile.backend,
       status: "completed",
       result,
       usage,
@@ -268,6 +271,7 @@ export async function spawnSubagent(params: SpawnSubagentParams): Promise<AgentT
     return textResult(`Subagent "${description}" (${subagentType}) failed: ${message}`, {
       description,
       subagentType,
+      backend: profile.backend,
       status: "error",
       error: message,
       usage,

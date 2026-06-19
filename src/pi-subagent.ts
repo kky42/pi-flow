@@ -17,12 +17,14 @@ import {
 } from "./prompts.ts";
 import { getSubagentProfiles } from "./profiles.ts";
 import { ConcurrencyLimiter } from "./core/concurrency.ts";
+import { getBackendAgentLabel } from "./core/display.ts";
 import { filterProfilesForModelRegistry, resolveProfileModel, usesPiBackend } from "./core/model.ts";
 import { CHILD_EXCLUDED_TOOLS, spawnSubagent } from "./core/spawn.ts";
 import { textResult } from "./core/progress.ts";
 import { createWorkflowTool } from "./workflow/tool.ts";
 import { listSavedWorkflows } from "./workflow/registry.ts";
 import type {
+  SubagentBackend,
   SubagentExtensionOptions,
   SubagentProfile,
   SubagentProgressNode,
@@ -75,6 +77,7 @@ interface CreateAgentToolOptions {
 
 const ACTIVITY_DISPLAY_PREVIEW_CHARS = 120;
 const PROGRESS_STATUSES: SubagentProgressNode["status"][] = ["running", "completed", "rejected", "error"];
+const SUBAGENT_BACKENDS: SubagentBackend[] = ["pi", "codex", "claude"];
 
 function shouldEnableProgress(ctx: ExtensionContext): boolean {
   if (!ctx.hasUI) {
@@ -118,6 +121,10 @@ function isProgressStatus(value: unknown): value is SubagentProgressNode["status
   return typeof value === "string" && PROGRESS_STATUSES.includes(value as SubagentProgressNode["status"]);
 }
 
+function isSubagentBackend(value: unknown): value is SubagentBackend {
+  return typeof value === "string" && SUBAGENT_BACKENDS.includes(value as SubagentBackend);
+}
+
 function isSubagentProgressNode(value: unknown): value is SubagentProgressNode {
   if (!isRecord(value)) {
     return false;
@@ -127,6 +134,7 @@ function isSubagentProgressNode(value: unknown): value is SubagentProgressNode {
     typeof value.id === "string" &&
     typeof value.description === "string" &&
     typeof subagentType === "string" &&
+    (value.backend === undefined || isSubagentBackend(value.backend)) &&
     isProgressStatus(value.status) &&
     Number.isFinite(value.startedAt) &&
     Array.isArray(value.activity) &&
@@ -139,10 +147,18 @@ function getDisplayLabel(subagentType: SubagentType | "unknown"): string {
   return subagentType;
 }
 
+function getProfileBackend(subagentType: SubagentType | "unknown"): SubagentBackend | undefined {
+  if (subagentType === "unknown") {
+    return undefined;
+  }
+  return getSubagentProfiles(getAgentDir()).get(subagentType)?.backend;
+}
+
 function formatProgressTitle(node: SubagentProgressNode): string {
   const label = getDisplayLabel(node.subagentType);
+  const agentLabel = getBackendAgentLabel(node.backend);
   const description = node.description.trim();
-  return description ? `Agent(${label}: ${description})` : `Agent(${label})`;
+  return description ? `${agentLabel}(${label}: ${description})` : `${agentLabel}(${label})`;
 }
 
 function formatDuration(ms: number): string {
@@ -331,6 +347,7 @@ function createAgentTool(
         return textResult(`Cannot launch subagent: ${error}.`, {
           description: params.description,
           subagentType,
+          backend: profile.backend,
           status: "rejected",
           error,
         });
@@ -343,6 +360,7 @@ function createAgentTool(
           {
             description: params.description,
             subagentType,
+            backend: profile.backend,
             status: "rejected",
             error: "Maximum subagent concurrency reached",
           },
@@ -373,9 +391,10 @@ function createAgentTool(
         return new Text("", 0, 0);
       }
       const subagentType = normalizeSubagentType(args.subagent_type);
+      const backend = getProfileBackend(subagentType);
       const description = typeof args.description === "string" ? args.description.trim() : "";
       return new Text(
-        `${theme.bold("Agent")} ${theme.fg("muted", subagentType)}${description ? ` ${theme.fg("dim", description)}` : ""}`,
+        `${theme.bold(getBackendAgentLabel(backend))} ${theme.fg("muted", subagentType)}${description ? ` ${theme.fg("dim", description)}` : ""}`,
         0,
         0,
       );
@@ -388,7 +407,7 @@ function createAgentTool(
       const usage = details.usage ? ` ${formatUsage(details.usage)}` : "";
       const reason = details.status === "rejected" || details.status === "error" ? formatStatusReason(details.error) : "";
       return new Text(
-        `${theme.bold("Agent")} ${theme.fg("muted", details.subagentType)} ${theme.fg("dim", details.description)} ${theme.fg("dim", `${details.status}${reason}${usage}`)}`,
+        `${theme.bold(getBackendAgentLabel(details.backend))} ${theme.fg("muted", details.subagentType)} ${theme.fg("dim", details.description)} ${theme.fg("dim", `${details.status}${reason}${usage}`)}`,
         0,
         0,
       );
