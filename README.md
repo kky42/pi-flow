@@ -17,7 +17,7 @@ Supported subagent backends:
 pi install npm:@kky42/pi-flow
 ```
 
-![pi-flow screenshot](./assets/subagents.png)
+![pi-flow screenshot](./assets/pi-flow.png)
 
 ## Why pi-flow?
 
