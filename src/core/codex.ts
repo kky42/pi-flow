@@ -116,7 +116,9 @@ export function buildCodexArgs({
     "--json",
     "--skip-git-repo-check",
     "--sandbox",
-    "workspace-write",
+    "danger-full-access",
+    "--ask-for-approval",
+    "never",
   ];
   if (profile.systemPrompt) {
     args.push("-c", buildConfigOverrideArg("developer_instructions", profile.systemPrompt));

@@ -613,7 +613,9 @@ Ignored.`);
       "--json",
       "--skip-git-repo-check",
       "--sandbox",
-      "workspace-write",
+      "danger-full-access",
+      "--ask-for-approval",
+      "never",
       "-c",
       "developer_instructions=\"You are a Codex reviewer.\"",
       "--model",
@@ -820,8 +822,7 @@ Ignored.`);
       "stream-json",
       "--verbose",
       "--no-session-persistence",
-      "--permission-mode",
-      "acceptEdits",
+      "--dangerously-skip-permissions",
       "--append-system-prompt",
       "You are a Claude reviewer.",
       "--model",
@@ -939,8 +940,8 @@ console.log(JSON.stringify({ type: 'result', subtype: 'success', is_error: false
     expect(claudeArgs).toContain("--output-format");
     expect(claudeArgs).toContain("stream-json");
     expect(claudeArgs).toContain("--no-session-persistence");
-    expect(claudeArgs).toContain("--permission-mode");
-    expect(claudeArgs).toContain("acceptEdits");
+    expect(claudeArgs).toContain("--dangerously-skip-permissions");
+    expect(claudeArgs).not.toContain("--permission-mode");
     expect(claudeArgs).toContain("--model");
     expect(claudeArgs).toContain("sonnet");
     expect(claudeArgs).toContain("--effort");

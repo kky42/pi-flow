@@ -11,7 +11,6 @@ import {
 import type { SubagentProfile, SubagentUsage, ThinkingLevel } from "../types.ts";
 
 const CLAUDE_COMMAND = "claude";
-const CLAUDE_PERMISSION_MODE = "acceptEdits";
 const FORCE_KILL_DELAY_MS = 3000;
 
 export interface ClaudeTokenUsage {
@@ -52,8 +51,7 @@ export function buildClaudeArgs({
     "stream-json",
     "--verbose",
     "--no-session-persistence",
-    "--permission-mode",
-    CLAUDE_PERMISSION_MODE,
+    "--dangerously-skip-permissions",
   ];
   if (profile.systemPrompt) {
     args.push("--append-system-prompt", profile.systemPrompt);
