@@ -22,6 +22,7 @@ import { filterProfilesForModelRegistry, resolveProfileModel, usesPiBackend } fr
 import { CHILD_EXCLUDED_TOOLS, spawnSubagent } from "./core/spawn.ts";
 import { createProgressNode, textResult, type AgentToolResult } from "./core/progress.ts";
 import { formatUsage, renderSubagentNode } from "./core/subagent-render.ts";
+import { SPINNER_INTERVAL_MS } from "./core/spinner.ts";
 import { createTimeoutSignal, formatDurationMs, markSubagentTimedOut } from "./core/timeout.ts";
 import { createWorkflowTool } from "./workflow/tool.ts";
 import { listSavedWorkflows } from "./workflow/registry.ts";
@@ -292,7 +293,7 @@ function startAgentHeartbeat(state: DelegationState): void {
     }
     state.frame++;
     broadcastActiveRunUpdates(state);
-  }, 80);
+  }, SPINNER_INTERVAL_MS);
   state.heartbeat.unref?.();
 }
 

@@ -9,6 +9,7 @@ import {
 import { Container, Text } from "@earendil-works/pi-tui";
 import type { ConcurrencyLimiter } from "../core/concurrency.ts";
 import { isActiveSubagentStatus, isCompletedSubagentStatus, renderSubagentNode } from "../core/subagent-render.ts";
+import { SPINNER_INTERVAL_MS } from "../core/spinner.ts";
 import { createTimeoutSignal, markSubagentTimedOut } from "../core/timeout.ts";
 import { filterProfilesForModelRegistry, resolveProfileModel, usesPiBackend } from "../core/model.ts";
 import { CHILD_EXCLUDED_TOOLS, spawnSubagent } from "../core/spawn.ts";
@@ -190,7 +191,6 @@ export function createWorkflowTool(
                 agent.error = details.progress.error;
                 agent.usage = details.progress.usage;
                 agent.status = details.progress.status;
-                snapshot.frame = (snapshot.frame ?? 0) + 1;
                 emit();
               }
             },
@@ -385,9 +385,6 @@ export function createWorkflowTool(
     },
   });
 }
-
-// Keep in sync with the shared subagent spinner cadence.
-const SPINNER_INTERVAL_MS = 80;
 
 function agentRenderPriority(agent: WorkflowAgentSnapshot): number {
   if (agent.status === "error" || agent.status === "aborted") return 0;

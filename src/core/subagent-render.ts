@@ -1,11 +1,12 @@
 import type { Theme } from "@earendil-works/pi-coding-agent";
 import { Container, Text, TruncatedText } from "@earendil-works/pi-tui";
 import { getBackendAgentLabel } from "./display.ts";
+import { SPINNER_FRAMES } from "./spinner.ts";
 import type { SubagentBackend, SubagentRunStatus, SubagentUsage } from "../types.ts";
+export { SPINNER_FRAMES, SPINNER_INTERVAL_MS } from "./spinner.ts";
 
 const ACTIVITY_DISPLAY_PREVIEW_CHARS = 120;
 export const RICH_SUBAGENT_ACTIVE_LIMIT = 4;
-export const SPINNER_FRAMES = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
 
 export interface RenderableSubagentNode {
   description?: string;
