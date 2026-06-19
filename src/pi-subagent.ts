@@ -35,7 +35,9 @@ import type {
 } from "./types.ts";
 
 const DEFAULT_MAX_CONCURRENT_SUBAGENTS = 12;
+const DEFAULT_SUBAGENT_TIMEOUT_MS = 2 * 60 * 60 * 1000;
 const MAX_CONCURRENT_SUBAGENTS_FLAG = "max-concurrent-subagents";
+const SUBAGENT_TIMEOUT_MS_FLAG = "subagent-timeout-ms";
 const STATUS_KEY = "pi-flow";
 
 function isProjectTrusted(ctx: ExtensionContext): boolean {
@@ -65,6 +67,7 @@ type AgentToolParams = Static<typeof agentToolParameters>;
 interface DelegationState {
   limiter: ConcurrencyLimiter;
   maxConcurrentSubagents: number;
+  subagentTimeoutMs: number;
   progressEnabled: boolean;
   activeRuns: Map<string, ActiveAgentRun>;
   frame: number;
@@ -84,6 +87,7 @@ interface SubagentUsageStatusState {
 
 interface CreateAgentToolOptions {
   getThinkingLevel: () => ReturnType<ExtensionAPI["getThinkingLevel"]>;
+  getSubagentTimeoutMs: () => number;
   updateStatus: (ctx: ExtensionContext, toolCallId: string, usage: SubagentUsage) => void;
 }
 
@@ -112,6 +116,80 @@ function normalizeMaxConcurrentSubagents(value: number | string | boolean | unde
     throw new Error(`${label} must be a positive integer`);
   }
   return parsed;
+}
+
+function normalizeSubagentTimeoutMs(value: number | string | boolean | undefined, fallback: number, label: string): number {
+  if (value === undefined) {
+    return fallback;
+  }
+  const parsed = typeof value === "string" && value.trim() !== "" ? Number(value) : value;
+  if (typeof parsed !== "number" || !Number.isInteger(parsed) || parsed < 0) {
+    throw new Error(`${label} must be a non-negative integer`);
+  }
+  return parsed;
+}
+
+function formatDurationMs(ms: number): string {
+  if (ms % 3_600_000 === 0) {
+    const hours = ms / 3_600_000;
+    return `${hours} hour${hours === 1 ? "" : "s"}`;
+  }
+  if (ms % 60_000 === 0) {
+    const minutes = ms / 60_000;
+    return `${minutes} minute${minutes === 1 ? "" : "s"}`;
+  }
+  if (ms % 1_000 === 0) {
+    const seconds = ms / 1_000;
+    return `${seconds} second${seconds === 1 ? "" : "s"}`;
+  }
+  return `${ms}ms`;
+}
+
+interface TimeoutSignalState {
+  signal: AbortSignal | undefined;
+  timedOut: () => boolean;
+  cleanup: () => void;
+}
+
+function createTimeoutSignal(baseSignal: AbortSignal | undefined, timeoutMs: number, description: string): TimeoutSignalState {
+  if (timeoutMs <= 0) {
+    return { signal: baseSignal, timedOut: () => false, cleanup: () => undefined };
+  }
+  const timeoutController = new AbortController();
+  let timedOut = false;
+  const timer = setTimeout(() => {
+    timedOut = true;
+    timeoutController.abort(new Error(`Subagent "${description}" timed out after ${formatDurationMs(timeoutMs)}`));
+  }, timeoutMs);
+  timer.unref?.();
+  const signal = baseSignal
+    ? AbortSignal.any([baseSignal, timeoutController.signal])
+    : timeoutController.signal;
+  return {
+    signal,
+    timedOut: () => timedOut,
+    cleanup: () => clearTimeout(timer),
+  };
+}
+
+function rewriteTimeoutResult(
+  result: AgentToolResult,
+  params: { description: string; subagentType: string; profile: SubagentProfile; timeoutMs: number },
+): AgentToolResult {
+  const details = result.details as SubagentToolDetails;
+  if (details.status !== "aborted") {
+    return result;
+  }
+  const message = `Subagent timed out after ${formatDurationMs(params.timeoutMs)}`;
+  details.error = message;
+  details.progress && (details.progress.error = message);
+  return textResult(`Subagent "${params.description}" (${params.subagentType}) aborted: ${message}`, {
+    ...details,
+    description: params.description,
+    subagentType: params.subagentType,
+    backend: params.profile.backend,
+    status: "aborted",
+  });
 }
 
 function normalizeSubagentType(value: string | undefined): SubagentType {
@@ -351,6 +429,7 @@ function createAgentTool(
       }
 
       try {
+        const timeout = createTimeoutSignal(signal, options.getSubagentTimeoutMs(), params.description);
         const result = await spawnSubagent({
           toolCallId,
           description: params.description,
@@ -359,7 +438,7 @@ function createAgentTool(
           model,
           thinkingLevel: profile.thinking ?? options.getThinkingLevel(),
           ctx,
-          signal,
+          signal: timeout.signal,
           progressEnabled: effectiveState.progressEnabled,
           onProgress: effectiveState.progressEnabled && run
             ? (partial) => {
@@ -373,7 +452,16 @@ function createAgentTool(
           onUsage: (usage) => options.updateStatus(ctx, toolCallId, usage),
           excludeTools: CHILD_EXCLUDED_TOOLS,
         });
-        const details = result.details as SubagentToolDetails;
+        timeout.cleanup();
+        const finalResult = timeout.timedOut()
+          ? rewriteTimeoutResult(result, {
+              description: params.description,
+              subagentType,
+              profile,
+              timeoutMs: options.getSubagentTimeoutMs(),
+            })
+          : result;
+        const details = finalResult.details as SubagentToolDetails;
         if (run && details.progress) {
           run.progress = details.progress;
         }
@@ -382,7 +470,7 @@ function createAgentTool(
           details.activeCount = getRunningRunCount(state);
           details.frame = state.frame;
         }
-        return result;
+        return finalResult;
       } finally {
         release();
         if (run) {
@@ -430,6 +518,11 @@ export function createSubagentExtension(options: SubagentExtensionOptions = {}):
     DEFAULT_MAX_CONCURRENT_SUBAGENTS,
     "maxConcurrentSubagents",
   );
+  const defaultSubagentTimeoutMs = normalizeSubagentTimeoutMs(
+    options.subagentTimeoutMs,
+    DEFAULT_SUBAGENT_TIMEOUT_MS,
+    "subagentTimeoutMs",
+  );
   const workflowEnabled = options.workflow !== false;
 
   return function subagentExtension(pi: ExtensionAPI) {
@@ -438,10 +531,16 @@ export function createSubagentExtension(options: SubagentExtensionOptions = {}):
       type: "string",
       default: String(defaultMaxConcurrentSubagents),
     });
+    pi.registerFlag(SUBAGENT_TIMEOUT_MS_FLAG, {
+      description: `Maximum wall-clock runtime for each pi-flow subagent in milliseconds; set 0 to disable (default: ${defaultSubagentTimeoutMs})`,
+      type: "string",
+      default: String(defaultSubagentTimeoutMs),
+    });
 
     const rootState: DelegationState = {
       limiter: new ConcurrencyLimiter(defaultMaxConcurrentSubagents),
       maxConcurrentSubagents: defaultMaxConcurrentSubagents,
+      subagentTimeoutMs: defaultSubagentTimeoutMs,
       progressEnabled: false,
       activeRuns: new Map(),
       frame: 0,
@@ -456,11 +555,17 @@ export function createSubagentExtension(options: SubagentExtensionOptions = {}):
         rootState.limiter = new ConcurrencyLimiter(current);
         rootState.maxConcurrentSubagents = current;
       }
+      rootState.subagentTimeoutMs = normalizeSubagentTimeoutMs(
+        pi.getFlag(SUBAGENT_TIMEOUT_MS_FLAG),
+        defaultSubagentTimeoutMs,
+        `--${SUBAGENT_TIMEOUT_MS_FLAG}`,
+      );
       return rootState;
     };
     const usageStatusState = createUsageStatusState();
     const toolOptions: CreateAgentToolOptions = {
       getThinkingLevel: () => pi.getThinkingLevel(),
+      getSubagentTimeoutMs: () => syncMaxConcurrentSubagents().subagentTimeoutMs,
       updateStatus: (ctx, toolCallId, usage) => {
         if (!ctx.hasUI) {
           return;
@@ -475,6 +580,7 @@ export function createSubagentExtension(options: SubagentExtensionOptions = {}):
         createWorkflowTool({
           getLimiter: () => syncMaxConcurrentSubagents().limiter,
           getThinkingLevel: () => pi.getThinkingLevel(),
+          getSubagentTimeoutMs: () => syncMaxConcurrentSubagents().subagentTimeoutMs,
           updateStatus: (ctx, toolCallId, usage) => {
             if (!ctx.hasUI) {
               return;

@@ -103,6 +103,7 @@ describe("pi-subagent agent contract", () => {
     expect(extensions.errors).toEqual([]);
     expect(extensions.extensions).toHaveLength(1);
     expect(extensions.extensions[0]?.flags.has("max-concurrent-subagents")).toBe(true);
+    expect(extensions.extensions[0]?.flags.has("subagent-timeout-ms")).toBe(true);
   });
 
 

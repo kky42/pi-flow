@@ -27,6 +27,7 @@ import {
 export interface CreateWorkflowToolOptions {
   getLimiter: () => ConcurrencyLimiter;
   getThinkingLevel: () => ReturnType<ExtensionAPI["getThinkingLevel"]>;
+  getSubagentTimeoutMs: () => number;
   updateStatus: (ctx: ExtensionContext, toolCallId: string, usage: SubagentUsage) => void;
 }
 
@@ -76,6 +77,31 @@ function formatRecentLogs(logs: string[], max = 10): string {
   const hidden = logs.length - shown.length;
   const prefix = hidden > 0 ? `- ... ${hidden} earlier log(s)\n` : "";
   return `\n\nLogs:\n${prefix}${shown.map((log) => `- ${log}`).join("\n")}`;
+}
+
+function formatDurationMs(ms: number): string {
+  if (ms % 3_600_000 === 0) return `${ms / 3_600_000} hour${ms === 3_600_000 ? "" : "s"}`;
+  if (ms % 60_000 === 0) return `${ms / 60_000} minute${ms === 60_000 ? "" : "s"}`;
+  if (ms % 1_000 === 0) return `${ms / 1_000} second${ms === 1_000 ? "" : "s"}`;
+  return `${ms}ms`;
+}
+
+function createTimeoutSignal(baseSignal: AbortSignal | undefined, timeoutMs: number, label: string) {
+  if (timeoutMs <= 0) {
+    return { signal: baseSignal, timedOut: () => false, cleanup: () => undefined };
+  }
+  const controller = new AbortController();
+  let timedOut = false;
+  const timer = setTimeout(() => {
+    timedOut = true;
+    controller.abort(new Error(`Subagent "${label}" timed out after ${formatDurationMs(timeoutMs)}`));
+  }, timeoutMs);
+  timer.unref?.();
+  return {
+    signal: baseSignal ? AbortSignal.any([baseSignal, controller.signal]) : controller.signal,
+    timedOut: () => timedOut,
+    cleanup: () => clearTimeout(timer),
+  };
 }
 
 
@@ -163,6 +189,8 @@ export function createWorkflowTool(
 
         const childIndex = call.index ?? ++agentSeq;
         const childId = `${toolCallId}:agent:${childIndex}`;
+        const timeoutMs = options.getSubagentTimeoutMs();
+        const timeout = createTimeoutSignal(agentSignal, timeoutMs, call.label);
         const result = await spawnSubagent({
           toolCallId: childId,
           description: call.label,
@@ -171,7 +199,7 @@ export function createWorkflowTool(
           model,
           thinkingLevel: profile.thinking ?? options.getThinkingLevel(),
           ctx,
-          signal: agentSignal,
+          signal: timeout.signal,
           progressEnabled: true,
           onProgress: (partial) => {
             const details = partial.details as SubagentToolDetails;
@@ -195,7 +223,14 @@ export function createWorkflowTool(
           customTools,
           outputSchema: externalOutputSchema ? call.schema : undefined,
         });
+        timeout.cleanup();
         const resultDetails = result.details as SubagentToolDetails;
+        if (timeout.timedOut() && resultDetails.status === "aborted") {
+          resultDetails.error = `Subagent timed out after ${formatDurationMs(timeoutMs)}`;
+          if (resultDetails.progress) {
+            resultDetails.progress.error = resultDetails.error;
+          }
+        }
         const agent = snapshot.agents.find((item) => item.index === childIndex);
         if (agent) {
           const progress = resultDetails.progress;
