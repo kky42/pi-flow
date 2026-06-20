@@ -1,5 +1,7 @@
 # pi-flow
 
+[![npm version](https://img.shields.io/npm/v/%40kky42%2Fpi-flow?label=npm)](https://www.npmjs.com/package/@kky42/pi-flow)
+
 Multi-backend subagents and dynamic workflow orchestration for [pi](https://github.com/earendil-works/pi).
 
 `pi-flow` gives pi two coordination primitives:
