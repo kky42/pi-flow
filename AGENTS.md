@@ -52,6 +52,19 @@
 - Resume uses `workflow({ scriptPath, resumeFromRunId, args })`: the runtime replays the script and returns cached results for the longest unchanged prefix of `agent()` calls using a JSONL run journal. The first fingerprint mismatch and everything after it runs live. Cached fingerprints include prompt, label, phase, `subagent_type`, and schema.
 - No background execution, dynamic command registration, nested workflow calls, model override, or worktree isolation in v3.
 
+## CI and release workflow
+
+- CI lives in `.github/workflows/ci.yml` and runs on pull requests plus pushes to `main`. It installs with `npm ci` and runs `npm run check` on Node 22.x and 24.x.
+- E2E scripts are intentionally not part of required CI because they use real models and can be slow or inconclusive. Run them manually before risky releases: `npm run e2e -- --timeout-ms 300000` and `npm run e2e:workflow-features`.
+- Publishing is tag-driven via `.github/workflows/publish.yml`. Do NOT run `npm publish` manually unless the user explicitly asks for an emergency manual publish.
+- Normal release steps for agents:
+  1. Bump `package.json` and `package-lock.json` with `npm version patch|minor|major --no-git-tag-version`.
+  2. Run `npm run check` (and manual E2E when warranted).
+  3. Commit and push `main`.
+  4. Create a tag exactly matching the package version, e.g. `git tag v1.0.11 && git push origin v1.0.11`.
+  5. GitHub Actions verifies the tag matches `package.json`, reruns `npm run check`, then publishes to npm with provenance. `pi.dev` updates from the npm package manifest automatically.
+- The publish workflow supports npm Trusted Publishing (OIDC, preferred) and falls back to an `NPM_TOKEN` repository secret if one is configured. If publish auth fails, report that setup issue; do not bypass the workflow by publishing locally.
+
 ## References Read
 
 - `refs/pi` for pi extension and SDK APIs.
