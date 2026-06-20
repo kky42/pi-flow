@@ -10,43 +10,62 @@
  */
 
 /** Max characters of child stderr retained for diagnostics. */
-export const MAX_STDERR_CHARS = 64 * 1024;
+export const MAX_STDERR_CHARS = 128 * 1024;
 
 /**
  * Max length of a single un-terminated stdout line. Line-delimited JSON events
- * are far smaller than this; anything larger cannot be a valid event, so it is
- * dropped rather than buffered forever while waiting for a newline.
+ * are far smaller than this; a line this large without a newline means the
+ * stream is broken, so the backend aborts the child and fails the run with a
+ * clear error rather than buffering forever (or silently dropping real output).
  */
-export const MAX_STDOUT_LINE_CHARS = 1024 * 1024;
+export const MAX_STDOUT_LINE_CHARS = 4 * 1024 * 1024;
 
 export interface BoundedBuffer {
-  /** Append a chunk, silently discarding anything past the cap. */
+  /** Append a chunk; content past the cap is dropped from the middle. */
   append(chunk: string): void;
-  /** The retained text, with a truncation marker appended when capped. */
+  /**
+   * The retained text. When the input exceeded the cap, the head and the tail
+   * are both kept with an elision marker between them, so the start AND the end
+   * of a failure (where the real error usually is) survive truncation.
+   */
   text(): string;
   /** Whether any input was dropped. */
   overflowed(): boolean;
 }
 
 export function createBoundedBuffer(maxChars: number): BoundedBuffer {
-  let value = "";
-  let overflowed = false;
+  const headLimit = Math.ceil(maxChars / 2);
+  const tailLimit = Math.max(0, maxChars - headLimit);
+  let head = "";
+  let tail = "";
+  // Total chars routed to the tail before the rolling cap dropped any; used to
+  // decide whether the middle was actually elided.
+  let tailRawLen = 0;
+
   return {
     append(chunk) {
-      if (overflowed || !chunk) {
+      if (!chunk) {
         return;
       }
-      const remaining = maxChars - value.length;
-      if (chunk.length <= remaining) {
-        value += chunk;
-        return;
+      if (head.length < headLimit) {
+        const room = headLimit - head.length;
+        head += chunk.slice(0, room);
+        chunk = chunk.slice(room);
       }
-      value += chunk.slice(0, Math.max(0, remaining));
-      overflowed = true;
+      if (chunk) {
+        tailRawLen += chunk.length;
+        tail = (tail + chunk).slice(-tailLimit);
+      }
     },
     text() {
-      return overflowed ? `${value}\n…[truncated]` : value;
+      if (tailRawLen === 0) {
+        return head;
+      }
+      if (tailRawLen <= tailLimit) {
+        return head + tail;
+      }
+      return `${head}\n…[truncated]\n${tail}`;
     },
-    overflowed: () => overflowed,
+    overflowed: () => tailRawLen > tailLimit,
   };
 }

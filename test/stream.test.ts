@@ -15,17 +15,16 @@ describe("createBoundedBuffer", () => {
     const buffer = createBoundedBuffer(8);
     buffer.append("0123456789");
     expect(buffer.overflowed()).toBe(true);
-    expect(buffer.text()).toBe("01234567\n…[truncated]");
+    expect(buffer.text()).toBe("0123\n…[truncated]\n6789");
   });
 
-  it("caps across multiple appends and ignores everything past the cap", () => {
+  it("caps across multiple appends and keeps the head plus tail", () => {
     const buffer = createBoundedBuffer(5);
     buffer.append("abc");
     buffer.append("defgh");
     buffer.append("ijkl");
     expect(buffer.overflowed()).toBe(true);
-    // "abc" + "de" reaches the cap; the rest is discarded.
-    expect(buffer.text()).toBe("abcde\n…[truncated]");
+    expect(buffer.text()).toBe("abc\n…[truncated]\nkl");
   });
 
   it("treats an exact-cap fill as not overflowed", () => {

@@ -349,6 +349,7 @@ export async function spawnCodexSubagent(params: {
   let sawTerminalEvent = false;
   let eventError: string | undefined;
   let diagnosticError: string | undefined;
+  let oversizeError: string | undefined;
   let child: ChildProcess | undefined;
   let schemaFile: Awaited<ReturnType<typeof createOutputSchemaFile>> = undefined;
   let abortHandler: (() => void) | undefined;
@@ -435,9 +436,12 @@ export async function spawnCodexSubagent(params: {
       const lines = stdoutBuffer.split(/\r?\n/);
       stdoutBuffer = lines.pop() ?? "";
       if (stdoutBuffer.length > MAX_STDOUT_LINE_CHARS) {
-        // A single newline-free line this large cannot be a valid JSONL event;
-        // drop it so a runaway stream cannot grow the buffer without bound.
+        // A single newline-free line this large means the stream is unparseable.
+        // Fail loudly instead of silently dropping what might be real output.
+        oversizeError ??= `codex emitted a stdout line over ${MAX_STDOUT_LINE_CHARS} chars without a newline; stream is unparseable`;
         stdoutBuffer = "";
+        abortChild(proc);
+        return;
       }
       for (const line of lines) {
         const event = parseCodexJsonLine(line);
@@ -475,6 +479,9 @@ export async function spawnCodexSubagent(params: {
 
     if (params.signal?.aborted) {
       throw new Error("Subagent aborted");
+    }
+    if (oversizeError) {
+      throw new Error(oversizeError);
     }
     if (eventError) {
       throw new Error(eventError);

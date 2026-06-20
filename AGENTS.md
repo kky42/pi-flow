@@ -39,7 +39,7 @@
 - Do not put exact concurrency values in the model-facing workflow prompt; say fan-out is bounded and queued.
 - Architecture: `src/core/{spawn,concurrency,model,progress,stream}.ts` is the shared core; `src/workflow/{runtime,tool,structured-output}.ts` is the workflow layer; `src/pi-subagent.ts` wires both tools and shares one limiter. Adds an `acorn` dependency (the only runtime dependency).
 - The throttled progress-emit + heartbeat machinery lives ONCE in `progress.ts` as `createProgressEmitter` and is shared by all three backends (`spawn.ts` pi, `codex.ts`, `claude.ts`); do not re-inline per-backend copies. The queued→running and abort emit timing is owned by that emitter.
-- External-CLI backends bound parent-side child output via `createBoundedBuffer` (`stream.ts`): stderr is capped (`MAX_STDERR_CHARS`) and a single newline-free stdout line over `MAX_STDOUT_LINE_CHARS` is dropped, so one runaway subagent cannot OOM the host pi process. A clean exit (code 0) with usable final text but no recognized terminal event is accepted rather than failed, so a CLI stream-format change does not turn good runs into failures.
+- External-CLI backends bound parent-side child output via `createBoundedBuffer` (`stream.ts`): stderr is capped (`MAX_STDERR_CHARS`) and a single newline-free stdout line over `MAX_STDOUT_LINE_CHARS` aborts/fails the run clearly, so one runaway subagent cannot OOM the host pi process. A clean exit (code 0) with usable final text but no recognized terminal event is accepted rather than failed, so a CLI stream-format change does not turn good runs into failures.
 
 ## Saved workflows (v3)
 

@@ -22,6 +22,7 @@ import { createSubagentExtension } from "../src/pi-subagent.ts";
 import { getSubagentProfiles, loadBuiltinSubagentProfiles } from "../src/profiles.ts";
 import { buildClaudeArgs, claudeUsageToSubagentUsage, extractClaudeCostUsd, extractClaudeError, extractClaudeFinalText, extractClaudeUsage, spawnClaudeSubagent } from "../src/core/claude.ts";
 import { buildCodexArgs, codexUsageToSubagentUsage, estimateCodexCostUsd, extractCodexFinalText, spawnCodexSubagent } from "../src/core/codex.ts";
+import { MAX_STDOUT_LINE_CHARS } from "../src/core/stream.ts";
 import { packageRoot, setupPiSubagentTestHarness } from "./helpers/pi-subagent-harness.ts";
 
 describe("pi-subagent codex backend", () => {
@@ -223,6 +224,42 @@ setTimeout(() => {
     expect(existsSync(markerPath)).toBe(false);
   });
 
+  it("fails clearly when codex emits an oversized stdout line", async () => {
+    const binDir = join(tempDir, "bin-codex-oversize");
+    mkdirSync(binDir, { recursive: true });
+    const fakeCodexPath = join(binDir, "codex");
+    writeFileSync(fakeCodexPath, `#!/usr/bin/env node
+process.stdin.resume();
+process.stdout.write('x'.repeat(${MAX_STDOUT_LINE_CHARS + 1024}), () => {
+  setTimeout(() => process.exit(0), 50);
+});
+`);
+    chmodSync(fakeCodexPath, 0o755);
+    process.env.PATH = `${binDir}:${originalPathEnv ?? ""}`;
+
+    const result = await spawnCodexSubagent({
+      toolCallId: "codex-oversize",
+      description: "Codex oversize",
+      prompt: "Trigger oversize stdout.",
+      profile: {
+        name: "codex-oversize",
+        description: "Codex oversize profile.",
+        backend: "codex",
+        model: "gpt-5.4-mini",
+        systemPrompt: "Codex oversize prompt.",
+      },
+      thinkingLevel: "medium",
+      ctx: { cwd } as ExtensionContext,
+      signal: undefined,
+      progressEnabled: false,
+      onProgress: undefined,
+      onUsage: () => undefined,
+    });
+
+    expect(result.details.status).toBe("error");
+    expect(result.details.error).toContain("codex emitted a stdout line over");
+    expect(result.details.error).toContain("without a newline");
+  });
 
   it("does not add unknown codex model cost to the status line", async () => {
     const subagentsDir = join(agentDir, "subagents");
