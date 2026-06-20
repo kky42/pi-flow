@@ -4,13 +4,15 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import {
-  createProgressNode,
-  MAX_ACTIVITY_LINES,
-  PROGRESS_HEARTBEAT_INTERVAL_MS,
-  PROGRESS_UPDATE_INTERVAL_MS,
+  createProgressEmitter,
   textResult,
   type AgentToolResult,
 } from "./progress.ts";
+import {
+  createBoundedBuffer,
+  MAX_STDERR_CHARS,
+  MAX_STDOUT_LINE_CHARS,
+} from "./stream.ts";
 import type { SubagentProfile, SubagentUsage, ThinkingLevel } from "../types.ts";
 
 const CODEX_COMMAND = "codex";
@@ -263,18 +265,6 @@ export function codexActivityFromEvent(event: Record<string, unknown>): string |
   return error ? error : undefined;
 }
 
-function addActivity(progress: NonNullable<ReturnType<typeof createProgressNode>>, line: string): void {
-  const normalized = line.replace(/\s+/g, " ").trim();
-  if (!normalized) {
-    return;
-  }
-  progress.activityCount++;
-  progress.activity.push(normalized);
-  if (progress.activity.length > MAX_ACTIVITY_LINES) {
-    progress.activity.splice(0, progress.activity.length - MAX_ACTIVITY_LINES);
-  }
-}
-
 function emptyUsage(model: string | undefined): SubagentUsage {
   return codexUsageToSubagentUsage(model, {
     inputTokens: 0,
@@ -344,10 +334,18 @@ export async function spawnCodexSubagent(params: {
 }): Promise<AgentToolResult> {
   const subagentType = params.profile.name;
   const taskPrompt = params.appendInstructions ? `${params.prompt}\n\n${params.appendInstructions}` : params.prompt;
-  const progress = params.progressEnabled ? createProgressNode(params.toolCallId, params.description, subagentType, "running", params.profile.backend) : undefined;
+  const emitter = createProgressEmitter({
+    toolCallId: params.toolCallId,
+    description: params.description,
+    subagentType,
+    backend: params.profile.backend,
+    enabled: params.progressEnabled,
+    onProgress: params.onProgress,
+  });
+  const progress = emitter.progress;
   let latestUsage = emptyUsage(params.profile.model);
   let resultText = "";
-  let stderrText = "";
+  const stderrBuffer = createBoundedBuffer(MAX_STDERR_CHARS);
   let sawTerminalEvent = false;
   let eventError: string | undefined;
   let diagnosticError: string | undefined;
@@ -355,56 +353,37 @@ export async function spawnCodexSubagent(params: {
   let schemaFile: Awaited<ReturnType<typeof createOutputSchemaFile>> = undefined;
   let abortHandler: (() => void) | undefined;
 
-  let lastProgressEmit = 0;
-  let pendingProgressTimer: ReturnType<typeof setTimeout> | undefined;
-  let progressHeartbeatTimer: ReturnType<typeof setInterval> | undefined;
-  const emitProgress = () => {
-    if (!progress || !params.onProgress) {
-      return;
+  const handleEvent = (event: Record<string, unknown>) => {
+    if (event.type === "turn.completed" || event.type === "turn.failed") {
+      sawTerminalEvent = true;
     }
-    if (pendingProgressTimer) {
-      clearTimeout(pendingProgressTimer);
-      pendingProgressTimer = undefined;
+    const activity = codexActivityFromEvent(event);
+    if (activity) {
+      emitter.addActivity(activity);
+      emitter.emitSoon();
     }
-    lastProgressEmit = Date.now();
-    params.onProgress(textResult(`Subagent "${params.description}" (${subagentType}) is running.`, {
-      description: params.description,
-      subagentType,
-      backend: params.profile.backend,
-      status: progress.status,
-      result: progress.result,
-      error: progress.error,
-      progress,
-    }));
-  };
-  const emitProgressSoon = () => {
-    const elapsed = Date.now() - lastProgressEmit;
-    if (elapsed >= PROGRESS_UPDATE_INTERVAL_MS) {
-      emitProgress();
-      return;
+    const usage = extractCodexUsage(event);
+    if (usage) {
+      latestUsage = codexUsageToSubagentUsage(params.profile.model, usage);
+      if (progress) {
+        progress.usage = latestUsage;
+      }
+      params.onUsage(latestUsage);
+      emitter.emitSoon();
     }
-    if (!pendingProgressTimer) {
-      pendingProgressTimer = setTimeout(() => {
-        pendingProgressTimer = undefined;
-        emitProgress();
-      }, PROGRESS_UPDATE_INTERVAL_MS - elapsed);
+    const text = extractCodexFinalText(event);
+    if (text !== undefined) {
+      resultText = text;
+      if (text.trim()) {
+        emitter.addActivity(text.split("\n").find((line) => line.trim()) ?? text);
+        emitter.emitSoon();
+      }
     }
-  };
-  const startProgressHeartbeat = () => {
-    if (!progress || !params.onProgress || progressHeartbeatTimer) {
-      return;
+    if (event.type === "turn.failed") {
+      eventError ??= extractCodexError(event);
+    } else if (event.type === "error") {
+      diagnosticError ??= extractCodexError(event);
     }
-    progressHeartbeatTimer = setInterval(() => {
-      emitProgressSoon();
-    }, PROGRESS_HEARTBEAT_INTERVAL_MS);
-    progressHeartbeatTimer.unref?.();
-  };
-  const stopProgressHeartbeat = () => {
-    if (!progressHeartbeatTimer) {
-      return;
-    }
-    clearInterval(progressHeartbeatTimer);
-    progressHeartbeatTimer = undefined;
   };
 
   try {
@@ -455,50 +434,25 @@ export async function spawnCodexSubagent(params: {
       stdoutBuffer += chunk;
       const lines = stdoutBuffer.split(/\r?\n/);
       stdoutBuffer = lines.pop() ?? "";
+      if (stdoutBuffer.length > MAX_STDOUT_LINE_CHARS) {
+        // A single newline-free line this large cannot be a valid JSONL event;
+        // drop it so a runaway stream cannot grow the buffer without bound.
+        stdoutBuffer = "";
+      }
       for (const line of lines) {
         const event = parseCodexJsonLine(line);
-        if (!event) {
-          continue;
-        }
-        if (event.type === "turn.completed" || event.type === "turn.failed") {
-          sawTerminalEvent = true;
-        }
-        const activity = codexActivityFromEvent(event);
-        if (progress && activity) {
-          addActivity(progress, activity);
-          emitProgressSoon();
-        }
-        const usage = extractCodexUsage(event);
-        if (usage) {
-          latestUsage = codexUsageToSubagentUsage(params.profile.model, usage);
-          if (progress) {
-            progress.usage = latestUsage;
-          }
-          params.onUsage(latestUsage);
-          emitProgressSoon();
-        }
-        const text = extractCodexFinalText(event);
-        if (text !== undefined) {
-          resultText = text;
-          if (progress && text.trim()) {
-            addActivity(progress, text.split("\n").find((line) => line.trim()) ?? text);
-            emitProgressSoon();
-          }
-        }
-        if (event.type === "turn.failed") {
-          eventError ??= extractCodexError(event);
-        } else if (event.type === "error") {
-          diagnosticError ??= extractCodexError(event);
+        if (event) {
+          handleEvent(event);
         }
       }
     });
 
     proc.stderr.on("data", (chunk) => {
-      stderrText += String(chunk);
+      stderrBuffer.append(String(chunk));
     });
 
-    emitProgress();
-    startProgressHeartbeat();
+    emitter.emit();
+    emitter.startHeartbeat();
     proc.stdin.end(taskPrompt);
 
     const closeResult = await new Promise<{ code: number | null; signal: NodeJS.Signals | null }>((resolve, reject) => {
@@ -507,26 +461,7 @@ export async function spawnCodexSubagent(params: {
         if (stdoutBuffer.trim()) {
           const event = parseCodexJsonLine(stdoutBuffer);
           if (event) {
-            if (event.type === "turn.completed" || event.type === "turn.failed") {
-              sawTerminalEvent = true;
-            }
-            const usage = extractCodexUsage(event);
-            if (usage) {
-              latestUsage = codexUsageToSubagentUsage(params.profile.model, usage);
-              if (progress) {
-                progress.usage = latestUsage;
-              }
-              params.onUsage(latestUsage);
-            }
-            const text = extractCodexFinalText(event);
-            if (text !== undefined) {
-              resultText = text;
-            }
-            if (event.type === "turn.failed") {
-              eventError ??= extractCodexError(event);
-            } else if (event.type === "error") {
-              diagnosticError ??= extractCodexError(event);
-            }
+            handleEvent(event);
           }
         }
         resolve({ code, signal });
@@ -545,11 +480,15 @@ export async function spawnCodexSubagent(params: {
       throw new Error(eventError);
     }
     if (closeResult.code !== 0) {
-      const stderr = stderrText.trim();
+      const stderr = stderrBuffer.text().trim();
       const diagnostic = diagnosticError ? `: ${diagnosticError}` : "";
       throw new Error(`codex exited with code ${closeResult.code}${closeResult.signal ? ` (signal ${closeResult.signal})` : ""}${stderr ? `: ${stderr}` : diagnostic}`);
     }
-    if (!sawTerminalEvent) {
+    if (!sawTerminalEvent && !resultText.trim()) {
+      // Hard-fail only when codex produced nothing usable. If it exited cleanly
+      // (code 0) with final text but no recognized terminal event — e.g. a CLI
+      // stream-format change renamed the event — accept the output rather than
+      // turning a good run into a failure.
       throw new Error(diagnosticError ?? "codex exited without a terminal JSON event");
     }
 
@@ -594,13 +533,10 @@ export async function spawnCodexSubagent(params: {
       ...(progress ? { progress } : {}),
     });
   } finally {
-    if (pendingProgressTimer) {
-      clearTimeout(pendingProgressTimer);
-    }
+    emitter.stop();
     if (abortHandler) {
       params.signal?.removeEventListener("abort", abortHandler);
     }
-    stopProgressHeartbeat();
     await schemaFile?.cleanup().catch(() => undefined);
   }
 }

@@ -37,7 +37,9 @@
 - Foreground-only still holds: the `workflow` tool blocks until the script completes. No background execution, polling, steering, or scheduling — orchestration is front-loaded into the script, not a reactive coordinator. V3 adds foreground resume-by-replay using a run journal. Per-call model/thinking *override* remains out of contract; profile-based selection via `subagent_type` is the supported path.
 - Nesting is hard-blocked for pi-backed workflow subagents: they get neither `Agent` nor `workflow`. External CLI backends use their own tool surface; this extension does not try to prevent nested/delegation features inside those CLIs.
 - Do not put exact concurrency values in the model-facing workflow prompt; say fan-out is bounded and queued.
-- Architecture: `src/core/{spawn,concurrency,model,progress}.ts` is the shared core; `src/workflow/{runtime,tool,structured-output}.ts` is the workflow layer; `src/pi-subagent.ts` wires both tools and shares one limiter. Adds an `acorn` dependency (the only runtime dependency).
+- Architecture: `src/core/{spawn,concurrency,model,progress,stream}.ts` is the shared core; `src/workflow/{runtime,tool,structured-output}.ts` is the workflow layer; `src/pi-subagent.ts` wires both tools and shares one limiter. Adds an `acorn` dependency (the only runtime dependency).
+- The throttled progress-emit + heartbeat machinery lives ONCE in `progress.ts` as `createProgressEmitter` and is shared by all three backends (`spawn.ts` pi, `codex.ts`, `claude.ts`); do not re-inline per-backend copies. The queued→running and abort emit timing is owned by that emitter.
+- External-CLI backends bound parent-side child output via `createBoundedBuffer` (`stream.ts`): stderr is capped (`MAX_STDERR_CHARS`) and a single newline-free stdout line over `MAX_STDOUT_LINE_CHARS` is dropped, so one runaway subagent cannot OOM the host pi process. A clean exit (code 0) with usable final text but no recognized terminal event is accepted rather than failed, so a CLI stream-format change does not turn good runs into failures.
 
 ## Saved workflows (v3)
 

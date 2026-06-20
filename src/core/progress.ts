@@ -145,6 +145,128 @@ export function updateProgressFromEvent(progress: SubagentProgressNode, event: A
   }
 }
 
+export interface ProgressEmitterOptions {
+  toolCallId: string;
+  description: string;
+  subagentType: SubagentType;
+  backend?: SubagentBackend;
+  enabled: boolean;
+  onProgress: ((result: AgentToolResult) => void) | undefined;
+}
+
+export interface ProgressEmitter {
+  /** The live progress node, or undefined when progress is disabled. */
+  readonly progress: SubagentProgressNode | undefined;
+  /** Append an activity line (no-op when disabled). */
+  addActivity(line: string): void;
+  /** Replace the latest activity line (no-op when disabled). */
+  replaceLatestActivity(line: string): void;
+  /** Emit a progress snapshot immediately, resetting the throttle window. */
+  emit(): void;
+  /** Emit a progress snapshot, throttled to PROGRESS_UPDATE_INTERVAL_MS. */
+  emitSoon(): void;
+  /** Start the periodic heartbeat that keeps the live row fresh. */
+  startHeartbeat(): void;
+  /** Clear the pending throttle timer and stop the heartbeat. */
+  stop(): void;
+}
+
+/**
+ * Owns the progress node plus the throttled-emit + heartbeat machinery shared by
+ * every subagent backend (pi, codex, claude). Extracted so the emit cadence and
+ * the queued→running / abort timing live in ONE place instead of three
+ * hand-synchronized copies that silently drift.
+ */
+export function createProgressEmitter(options: ProgressEmitterOptions): ProgressEmitter {
+  const { toolCallId, description, subagentType, backend, enabled, onProgress } = options;
+  const progress = enabled
+    ? createProgressNode(toolCallId, description, subagentType, "running", backend)
+    : undefined;
+  const live = Boolean(progress && onProgress);
+
+  let lastProgressEmit = 0;
+  let pendingProgressTimer: ReturnType<typeof setTimeout> | undefined;
+  let heartbeatTimer: ReturnType<typeof setInterval> | undefined;
+
+  const emit = (): void => {
+    if (!progress || !onProgress) {
+      return;
+    }
+    if (pendingProgressTimer) {
+      clearTimeout(pendingProgressTimer);
+      pendingProgressTimer = undefined;
+    }
+    lastProgressEmit = Date.now();
+    onProgress(
+      textResult(`Subagent "${description}" (${subagentType}) is running.`, {
+        description,
+        subagentType,
+        ...(backend ? { backend } : {}),
+        status: progress.status,
+        result: progress.result,
+        error: progress.error,
+        progress,
+      }),
+    );
+  };
+
+  const emitSoon = (): void => {
+    if (!progress || !onProgress) {
+      return;
+    }
+    const elapsed = Date.now() - lastProgressEmit;
+    if (elapsed >= PROGRESS_UPDATE_INTERVAL_MS) {
+      emit();
+      return;
+    }
+    if (!pendingProgressTimer) {
+      pendingProgressTimer = setTimeout(() => {
+        pendingProgressTimer = undefined;
+        emit();
+      }, PROGRESS_UPDATE_INTERVAL_MS - elapsed);
+    }
+  };
+
+  const startHeartbeat = (): void => {
+    if (!live || heartbeatTimer) {
+      return;
+    }
+    heartbeatTimer = setInterval(() => {
+      emitSoon();
+    }, PROGRESS_HEARTBEAT_INTERVAL_MS);
+    heartbeatTimer.unref?.();
+  };
+
+  const stop = (): void => {
+    if (pendingProgressTimer) {
+      clearTimeout(pendingProgressTimer);
+      pendingProgressTimer = undefined;
+    }
+    if (heartbeatTimer) {
+      clearInterval(heartbeatTimer);
+      heartbeatTimer = undefined;
+    }
+  };
+
+  return {
+    progress,
+    addActivity: (line) => {
+      if (progress) {
+        addActivity(progress, line);
+      }
+    },
+    replaceLatestActivity: (line) => {
+      if (progress) {
+        replaceLatestActivity(progress, line);
+      }
+    },
+    emit,
+    emitSoon,
+    startHeartbeat,
+    stop,
+  };
+}
+
 export function extractFinalAssistantText(messages: readonly unknown[]): string {
   for (let i = messages.length - 1; i >= 0; i--) {
     const message = messages[i] as { role?: string; content?: unknown };
