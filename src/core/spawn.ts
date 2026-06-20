@@ -8,12 +8,10 @@ import {
   type ToolDefinition,
 } from "@earendil-works/pi-coding-agent";
 import {
-  createProgressNode,
+  createProgressEmitter,
   extractFinalAssistantText,
   getFinalAssistantFailure,
   getSubagentUsage,
-  PROGRESS_HEARTBEAT_INTERVAL_MS,
-  PROGRESS_UPDATE_INTERVAL_MS,
   textResult,
   updateProgressFromEvent,
   type AgentToolResult,
@@ -118,7 +116,15 @@ export async function spawnSubagent(params: SpawnSubagentParams): Promise<AgentT
   const toolAllowList =
     profile.tools !== undefined ? [...profile.tools, ...customTools.map((tool) => tool.name)] : undefined;
   const taskPrompt = params.appendInstructions ? `${prompt}\n\n${params.appendInstructions}` : prompt;
-  const progress = progressEnabled ? createProgressNode(toolCallId, description, subagentType, "running", profile.backend) : undefined;
+  const emitter = createProgressEmitter({
+    toolCallId,
+    description,
+    subagentType,
+    backend: profile.backend,
+    enabled: progressEnabled,
+    onProgress,
+  });
+  const progress = emitter.progress;
 
   const agentDir = getAgentDir();
   const cwd = ctx.cwd;
@@ -164,62 +170,10 @@ export async function spawnSubagent(params: SpawnSubagentParams): Promise<AgentT
     }
   }
 
-  let lastProgressEmit = 0;
-  let pendingProgressTimer: ReturnType<typeof setTimeout> | undefined;
-  let progressHeartbeatTimer: ReturnType<typeof setInterval> | undefined;
-  const emitProgress = () => {
-    if (!progress || !onProgress) {
-      return;
-    }
-    if (pendingProgressTimer) {
-      clearTimeout(pendingProgressTimer);
-      pendingProgressTimer = undefined;
-    }
-    lastProgressEmit = Date.now();
-    onProgress(textResult(`Subagent "${description}" (${subagentType}) is running.`, {
-      description,
-      subagentType,
-      backend: profile.backend,
-      status: progress.status,
-      result: progress.result,
-      error: progress.error,
-      progress,
-    }));
-  };
-  const emitProgressSoon = () => {
-    const elapsed = Date.now() - lastProgressEmit;
-    if (elapsed >= PROGRESS_UPDATE_INTERVAL_MS) {
-      emitProgress();
-      return;
-    }
-    if (!pendingProgressTimer) {
-      pendingProgressTimer = setTimeout(() => {
-        pendingProgressTimer = undefined;
-        emitProgress();
-      }, PROGRESS_UPDATE_INTERVAL_MS - elapsed);
-    }
-  };
-  const startProgressHeartbeat = () => {
-    if (!progress || !onProgress || progressHeartbeatTimer) {
-      return;
-    }
-    progressHeartbeatTimer = setInterval(() => {
-      emitProgressSoon();
-    }, PROGRESS_HEARTBEAT_INTERVAL_MS);
-    progressHeartbeatTimer.unref?.();
-  };
-  const stopProgressHeartbeat = () => {
-    if (!progressHeartbeatTimer) {
-      return;
-    }
-    clearInterval(progressHeartbeatTimer);
-    progressHeartbeatTimer = undefined;
-  };
-
   const unsubscribe = session.subscribe((event) => {
     if (progress) {
       updateProgressFromEvent(progress, event);
-      emitProgressSoon();
+      emitter.emitSoon();
     }
     if (event.type === "message_end" && event.message.role === "assistant") {
       const usage = getSubagentUsage(session);
@@ -238,8 +192,8 @@ export async function spawnSubagent(params: SpawnSubagentParams): Promise<AgentT
     if (signal?.aborted) {
       throw new Error("Subagent aborted before prompt start");
     }
-    emitProgress();
-    startProgressHeartbeat();
+    emitter.emit();
+    emitter.startHeartbeat();
     await session.prompt(taskPrompt, { source: "extension" });
     // pi-ai encodes model/request failures (rate limits, quota exhaustion,
     // provider errors) as a final assistant turn with stopReason "error"/
@@ -297,10 +251,7 @@ export async function spawnSubagent(params: SpawnSubagentParams): Promise<AgentT
       ...(progress ? { progress } : {}),
     });
   } finally {
-    if (pendingProgressTimer) {
-      clearTimeout(pendingProgressTimer);
-    }
-    stopProgressHeartbeat();
+    emitter.stop();
     unsubscribe?.();
     if (signal && abortHandler) {
       signal.removeEventListener("abort", abortHandler);

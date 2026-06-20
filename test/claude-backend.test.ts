@@ -22,6 +22,7 @@ import { createSubagentExtension } from "../src/pi-subagent.ts";
 import { getSubagentProfiles, loadBuiltinSubagentProfiles } from "../src/profiles.ts";
 import { buildClaudeArgs, claudeUsageToSubagentUsage, extractClaudeCostUsd, extractClaudeError, extractClaudeFinalText, extractClaudeUsage, spawnClaudeSubagent } from "../src/core/claude.ts";
 import { buildCodexArgs, codexUsageToSubagentUsage, estimateCodexCostUsd, extractCodexFinalText, spawnCodexSubagent } from "../src/core/codex.ts";
+import { MAX_STDOUT_LINE_CHARS } from "../src/core/stream.ts";
 import { packageRoot, setupPiSubagentTestHarness } from "./helpers/pi-subagent-harness.ts";
 
 describe("pi-subagent claude backend", () => {
@@ -261,5 +262,42 @@ setTimeout(() => {
     expect(signal.addEventListener).toHaveBeenCalledWith("abort", expect.any(Function), { once: true });
     await new Promise((resolve) => setTimeout(resolve, 900));
     expect(existsSync(markerPath)).toBe(false);
+  });
+
+  it("fails clearly when claude emits an oversized stdout line", async () => {
+    const binDir = join(tempDir, "bin-claude-oversize");
+    mkdirSync(binDir, { recursive: true });
+    const fakeClaudePath = join(binDir, "claude");
+    writeFileSync(fakeClaudePath, `#!/usr/bin/env node
+process.stdin.resume();
+process.stdout.write('x'.repeat(${MAX_STDOUT_LINE_CHARS + 1024}), () => {
+  setTimeout(() => process.exit(0), 50);
+});
+`);
+    chmodSync(fakeClaudePath, 0o755);
+    process.env.PATH = `${binDir}:${originalPathEnv ?? ""}`;
+
+    const result = await spawnClaudeSubagent({
+      toolCallId: "claude-oversize",
+      description: "Claude oversize",
+      prompt: "Trigger oversize stdout.",
+      profile: {
+        name: "claude-oversize",
+        description: "Claude oversize profile.",
+        backend: "claude",
+        model: "sonnet",
+        systemPrompt: "Claude oversize prompt.",
+      },
+      thinkingLevel: "medium",
+      ctx: { cwd } as ExtensionContext,
+      signal: undefined,
+      progressEnabled: false,
+      onProgress: undefined,
+      onUsage: () => undefined,
+    });
+
+    expect(result.details.status).toBe("error");
+    expect(result.details.error).toContain("claude emitted a stdout line over");
+    expect(result.details.error).toContain("without a newline");
   });
 });

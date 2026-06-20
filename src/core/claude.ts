@@ -1,13 +1,15 @@
 import { spawn, type ChildProcess } from "node:child_process";
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import {
-  createProgressNode,
-  MAX_ACTIVITY_LINES,
-  PROGRESS_HEARTBEAT_INTERVAL_MS,
-  PROGRESS_UPDATE_INTERVAL_MS,
+  createProgressEmitter,
   textResult,
   type AgentToolResult,
 } from "./progress.ts";
+import {
+  createBoundedBuffer,
+  MAX_STDERR_CHARS,
+  MAX_STDOUT_LINE_CHARS,
+} from "./stream.ts";
 import type { SubagentProfile, SubagentUsage, ThinkingLevel } from "../types.ts";
 
 const CLAUDE_COMMAND = "claude";
@@ -281,18 +283,6 @@ export function claudeActivityFromEvent(event: Record<string, unknown>): string 
   return error ? error : undefined;
 }
 
-function addActivity(progress: NonNullable<ReturnType<typeof createProgressNode>>, line: string): void {
-  const normalized = line.replace(/\s+/g, " ").trim();
-  if (!normalized) {
-    return;
-  }
-  progress.activityCount++;
-  progress.activity.push(normalized);
-  if (progress.activity.length > MAX_ACTIVITY_LINES) {
-    progress.activity.splice(0, progress.activity.length - MAX_ACTIVITY_LINES);
-  }
-}
-
 function emptyTokenUsage(): ClaudeTokenUsage {
   return {
     inputTokens: 0,
@@ -347,68 +337,26 @@ export async function spawnClaudeSubagent(params: {
 }): Promise<AgentToolResult> {
   const subagentType = params.profile.name;
   const taskPrompt = params.appendInstructions ? `${params.prompt}\n\n${params.appendInstructions}` : params.prompt;
-  const progress = params.progressEnabled ? createProgressNode(params.toolCallId, params.description, subagentType, "running", params.profile.backend) : undefined;
+  const emitter = createProgressEmitter({
+    toolCallId: params.toolCallId,
+    description: params.description,
+    subagentType,
+    backend: params.profile.backend,
+    enabled: params.progressEnabled,
+    onProgress: params.onProgress,
+  });
+  const progress = emitter.progress;
   let latestRawUsage = emptyTokenUsage();
   let latestCostUsd: number | undefined;
   let latestUsage = claudeUsageToSubagentUsage(latestRawUsage, latestCostUsd);
   let resultText = "";
-  let stderrText = "";
+  const stderrBuffer = createBoundedBuffer(MAX_STDERR_CHARS);
   let sawTerminalEvent = false;
   let eventError: string | undefined;
+  let oversizeError: string | undefined;
   let child: ChildProcess | undefined;
   let abortHandler: (() => void) | undefined;
 
-  let lastProgressEmit = 0;
-  let pendingProgressTimer: ReturnType<typeof setTimeout> | undefined;
-  let progressHeartbeatTimer: ReturnType<typeof setInterval> | undefined;
-  const emitProgress = () => {
-    if (!progress || !params.onProgress) {
-      return;
-    }
-    if (pendingProgressTimer) {
-      clearTimeout(pendingProgressTimer);
-      pendingProgressTimer = undefined;
-    }
-    lastProgressEmit = Date.now();
-    params.onProgress(textResult(`Subagent "${params.description}" (${subagentType}) is running.`, {
-      description: params.description,
-      subagentType,
-      backend: params.profile.backend,
-      status: progress.status,
-      result: progress.result,
-      error: progress.error,
-      progress,
-    }));
-  };
-  const emitProgressSoon = () => {
-    const elapsed = Date.now() - lastProgressEmit;
-    if (elapsed >= PROGRESS_UPDATE_INTERVAL_MS) {
-      emitProgress();
-      return;
-    }
-    if (!pendingProgressTimer) {
-      pendingProgressTimer = setTimeout(() => {
-        pendingProgressTimer = undefined;
-        emitProgress();
-      }, PROGRESS_UPDATE_INTERVAL_MS - elapsed);
-    }
-  };
-  const startProgressHeartbeat = () => {
-    if (!progress || !params.onProgress || progressHeartbeatTimer) {
-      return;
-    }
-    progressHeartbeatTimer = setInterval(() => {
-      emitProgressSoon();
-    }, PROGRESS_HEARTBEAT_INTERVAL_MS);
-    progressHeartbeatTimer.unref?.();
-  };
-  const stopProgressHeartbeat = () => {
-    if (!progressHeartbeatTimer) {
-      return;
-    }
-    clearInterval(progressHeartbeatTimer);
-    progressHeartbeatTimer = undefined;
-  };
   const publishUsage = (usage: ClaudeTokenUsage | undefined, costUsd: number | undefined) => {
     if (usage) {
       latestRawUsage = usage;
@@ -421,16 +369,16 @@ export async function spawnClaudeSubagent(params: {
       progress.usage = latestUsage;
     }
     params.onUsage(latestUsage);
-    emitProgressSoon();
+    emitter.emitSoon();
   };
   const handleEvent = (event: Record<string, unknown>) => {
     if (event.type === "result" || event.type === "error") {
       sawTerminalEvent = true;
     }
     const activity = claudeActivityFromEvent(event);
-    if (progress && activity) {
-      addActivity(progress, activity);
-      emitProgressSoon();
+    if (activity) {
+      emitter.addActivity(activity);
+      emitter.emitSoon();
     }
     const usage = extractClaudeUsage(event);
     const cost = extractClaudeCostUsd(event);
@@ -440,9 +388,9 @@ export async function spawnClaudeSubagent(params: {
     const text = extractClaudeFinalText(event);
     if (text !== undefined) {
       resultText = text;
-      if (progress && text.trim()) {
-        addActivity(progress, text.split("\n").find((line) => line.trim()) ?? text);
-        emitProgressSoon();
+      if (text.trim()) {
+        emitter.addActivity(text.split("\n").find((line) => line.trim()) ?? text);
+        emitter.emitSoon();
       }
     }
     const error = extractClaudeError(event);
@@ -494,6 +442,14 @@ export async function spawnClaudeSubagent(params: {
       stdoutBuffer += chunk;
       const lines = stdoutBuffer.split(/\r?\n/);
       stdoutBuffer = lines.pop() ?? "";
+      if (stdoutBuffer.length > MAX_STDOUT_LINE_CHARS) {
+        // A single newline-free line this large means the stream is unparseable.
+        // Fail loudly instead of silently dropping what might be real output.
+        oversizeError ??= `claude emitted a stdout line over ${MAX_STDOUT_LINE_CHARS} chars without a newline; stream is unparseable`;
+        stdoutBuffer = "";
+        abortChild(proc);
+        return;
+      }
       for (const line of lines) {
         const event = parseClaudeJsonLine(line);
         if (event) {
@@ -503,11 +459,11 @@ export async function spawnClaudeSubagent(params: {
     });
 
     proc.stderr.on("data", (chunk) => {
-      stderrText += String(chunk);
+      stderrBuffer.append(String(chunk));
     });
 
-    emitProgress();
-    startProgressHeartbeat();
+    emitter.emit();
+    emitter.startHeartbeat();
     proc.stdin.end(taskPrompt);
 
     const closeResult = await new Promise<{ code: number | null; signal: NodeJS.Signals | null }>((resolve, reject) => {
@@ -531,14 +487,21 @@ export async function spawnClaudeSubagent(params: {
     if (params.signal?.aborted) {
       throw new Error("Subagent aborted");
     }
+    if (oversizeError) {
+      throw new Error(oversizeError);
+    }
     if (eventError) {
       throw new Error(eventError);
     }
     if (closeResult.code !== 0) {
-      const stderr = stderrText.trim();
+      const stderr = stderrBuffer.text().trim();
       throw new Error(`claude exited with code ${closeResult.code}${closeResult.signal ? ` (signal ${closeResult.signal})` : ""}${stderr ? `: ${stderr}` : ""}`);
     }
-    if (!sawTerminalEvent) {
+    if (!sawTerminalEvent && !resultText.trim()) {
+      // Hard-fail only when claude produced nothing usable. If it exited cleanly
+      // (code 0) with final text but no recognized terminal event — e.g. a CLI
+      // stream-format change renamed the event — accept the output rather than
+      // turning a good run into a failure.
       throw new Error("claude exited without a terminal JSON event");
     }
 
@@ -583,12 +546,9 @@ export async function spawnClaudeSubagent(params: {
       ...(progress ? { progress } : {}),
     });
   } finally {
-    if (pendingProgressTimer) {
-      clearTimeout(pendingProgressTimer);
-    }
+    emitter.stop();
     if (abortHandler) {
       params.signal?.removeEventListener("abort", abortHandler);
     }
-    stopProgressHeartbeat();
   }
 }
