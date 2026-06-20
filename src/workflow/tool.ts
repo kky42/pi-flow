@@ -59,6 +59,7 @@ function cloneSnapshot(snapshot: WorkflowToolDetails): WorkflowToolDetails {
   return {
     ...snapshot,
     phases: [...snapshot.phases],
+    plannedPhases: snapshot.plannedPhases?.map((phase) => ({ ...phase })),
     agents: snapshot.agents.map((agent) => ({ ...agent, activity: agent.activity ? [...agent.activity] : undefined })),
     logs: [...snapshot.logs],
   };
@@ -101,6 +102,7 @@ export function createWorkflowTool(
       const {
         script,
         metaName,
+        plannedPhases,
         source,
         sourcePath,
         scriptPath,
@@ -117,6 +119,7 @@ export function createWorkflowTool(
         status: "running",
         agentCount: 0,
         phases: [],
+        plannedPhases,
         agents: [],
         logs: [...warnings],
         source,
@@ -408,13 +411,20 @@ function selectAgentsForRender(agents: WorkflowAgentSnapshot[], max = 6): Workfl
     .map((item) => item.agent);
 }
 
-// Ordered list of phase groups: entered phases first, in entry order, then any
-// agent-only phases, then an `undefined` bucket for unphased agents. Entered
+// Ordered list of phase groups: planned phases first, then entered runtime
+// phases, then agent-only phases, then an `undefined` bucket for unphased
+// agents. Planned phases are visible before their first agent starts; runtime
 // phases are kept even before their first agent starts so live phase() updates
 // stay visible. Layout inspired by Michaelliv/pi-dynamic-workflows.
 function orderedPhases(details: WorkflowToolDetails): (string | undefined)[] {
   const seen = new Set<string>();
   const order: (string | undefined)[] = [];
+  for (const planned of details.plannedPhases ?? []) {
+    if (!seen.has(planned.title)) {
+      seen.add(planned.title);
+      order.push(planned.title);
+    }
+  }
   for (const phase of details.phases) {
     if (!seen.has(phase)) {
       seen.add(phase);
@@ -447,13 +457,21 @@ function renderPhaseTree(container: Container, details: WorkflowToolDetails, the
     const pErr = agents.filter(isFailedWorkflowAgent).length;
     const pRun = agents.filter((agent) => agent.status === "running").length;
     const pQueued = agents.filter((agent) => agent.status === "queued").length;
-    const complete = agents.length > 0 && pDone + pErr === agents.length;
     const isCurrent = phase !== undefined && details.currentPhase === phase;
-    const marker = complete ? "✓" : pRun > 0 || pQueued > 0 || isCurrent ? "▶" : "·";
-    const extra = `${pRun ? ` · ${pRun} running` : ""}${pQueued ? ` · ${pQueued} queued` : ""}${pErr ? ` · ${pErr} failed` : ""}`;
+    const reached = phase === undefined || details.phases.includes(phase);
+    const workflowRunning = details.status === "running";
+    const workflowFailed = details.status === "error" || details.status === "aborted";
+    const phaseStatus = pErr > 0 || (workflowFailed && isCurrent && agents.length === 0)
+      ? "failed"
+      : pRun > 0 || pQueued > 0 || (workflowRunning && isCurrent)
+        ? "running"
+        : agents.length > 0 || reached
+          ? "done"
+          : "planned";
+    const marker = phaseStatus === "failed" ? "✗" : phaseStatus === "done" ? "✓" : phaseStatus === "running" ? "▶" : "·";
     container.addChild(
       new Text(
-        `  ${theme.fg(pErr ? "error" : "muted", `${marker} ${phase ?? "unphased"} ${pDone}/${agents.length}${extra}`)}`,
+        `  ${theme.fg(pErr ? "error" : "muted", `${marker} ${phase ?? "unphased"} ${phaseStatus} · ${pDone}/${agents.length}`)}`,
         0,
         0,
       ),
@@ -487,8 +505,7 @@ function renderFlatAgents(container: Container, details: WorkflowToolDetails, th
 function renderWorkflowSnapshot(details: WorkflowToolDetails, theme: Theme, frame: number): Container {
   const container = new Container();
   const done = details.agents.filter((agent) => isCompletedSubagentStatus(agent.status)).length;
-  const failed = details.agents.filter(isFailedWorkflowAgent).length;
-  const counts = `${done}/${details.agents.length} done${failed ? `, ${failed} failed` : ""}`;
+  const counts = `${done}/${details.agents.length}`;
   container.addChild(
     new Text(
       `${theme.bold(`Workflow(${details.name})`)} ${theme.fg("dim", `${details.status} · ${counts}`)}`,
@@ -499,7 +516,7 @@ function renderWorkflowSnapshot(details: WorkflowToolDetails, theme: Theme, fram
 
   // Phase-grouped tree when the workflow uses phase() (including before the first
   // agent in a phase starts); otherwise keep the flat list.
-  if (details.phases.length > 0 || details.agents.some((agent) => agent.phase)) {
+  if ((details.plannedPhases?.length ?? 0) > 0 || details.phases.length > 0 || details.agents.some((agent) => agent.phase)) {
     renderPhaseTree(container, details, theme, frame);
   } else {
     renderFlatAgents(container, details, theme, frame);

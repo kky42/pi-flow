@@ -12,7 +12,7 @@ import {
 } from "./journal.ts";
 import { loadSavedWorkflowRegistry, loadWorkflowScriptPath } from "./registry.ts";
 import { parseWorkflowScript } from "./script-validation.ts";
-import type { WorkflowCachedAgentResult } from "./types.ts";
+import type { WorkflowCachedAgentResult, WorkflowMetaPhase } from "./types.ts";
 
 export const workflowToolParameters = Type.Object({
   script: Type.Optional(
@@ -53,6 +53,7 @@ export type WorkflowToolParams = Static<typeof workflowToolParameters>;
 export type PreparedWorkflowToolSource = {
   script: string;
   metaName: string;
+  plannedPhases?: WorkflowMetaPhase[];
   source: "inline" | "saved" | "path";
   sourcePath?: string;
   scriptPath?: string;
@@ -191,8 +192,11 @@ export async function prepareWorkflowToolSource(
 
   const script = normalizeWorkflowScript(source.script);
   let metaName = source.requestedName ?? "workflow";
+  let plannedPhases: WorkflowMetaPhase[] | undefined;
   try {
-    metaName = parseWorkflowScript(script).meta.name;
+    const parsed = parseWorkflowScript(script);
+    metaName = parsed.meta.name;
+    plannedPhases = parsed.meta.phases?.map((phase) => ({ ...phase }));
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     return sourceError(`Workflow script is invalid: ${message}`, {
@@ -318,6 +322,7 @@ export async function prepareWorkflowToolSource(
     value: {
       script,
       metaName,
+      plannedPhases,
       source: source.source,
       sourcePath: source.sourcePath,
       scriptPath,

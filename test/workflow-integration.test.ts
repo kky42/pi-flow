@@ -387,7 +387,7 @@ return await agent('compute the answer', {
         fauxAssistantMessage("second done"),
       ]);
 
-      const script = `export const meta = { name: 'two', description: 'two-phase flow' };
+      const script = `export const meta = { name: 'two', description: 'two-phase flow', phases: [{ title: 'scan' }, { title: 'report' }, { title: 'fix' }] };
 phase('scan');
 const a = await agent('first', { label: 'one' });
 phase('report');
@@ -403,6 +403,7 @@ return [a, b];`;
 
       expect(result.details.status).toBe("completed");
       expect(result.details.phases).toEqual(["scan", "report"]);
+      expect(result.details.plannedPhases.map((phase: any) => phase.title)).toEqual(["scan", "report", "fix"]);
       expect(result.details.agents.map((agent: any) => agent.status)).toEqual(["done", "done"]);
       expect(result.details.agents.map((agent: any) => agent.backend)).toEqual(["pi", "pi"]);
       expect(result.details.result).toEqual(["first done", "second done"]);

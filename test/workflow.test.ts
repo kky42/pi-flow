@@ -700,12 +700,11 @@ describe("workflow tool rendering", () => {
     const text = renderToText(tool.renderResult({ content: [{ type: "text", text: "x" }], details }, {}, theme));
     expect(text).toContain("Workflow(audit)");
     expect(text).toContain("running");
-    expect(text).toContain("1/3 done");
-    expect(text).toContain("1 failed");
-    // scan phase is complete (beta done) -> ✓ header; unphased bucket still running.
-    expect(text).toContain("✓ scan 1/1");
+    expect(text).toContain("running · 1/3");
+    // scan phase is complete (beta done) -> ✓ header; unphased bucket has a failure.
+    expect(text).toContain("✓ scan done · 1/1");
     expect(text).toContain("✓ Codex Agent(codex-reviewer, beta)");
-    expect(text).toContain("▶ unphased 0/2 · 1 running · 1 failed");
+    expect(text).toContain("✗ unphased failed · 0/2");
     expect(text).toContain("Pi Agent(explorer: alpha)");
     expect(text).toContain("✗ Claude Agent(claude-reviewer, gamma)");
     // declared phase renders before the unphased bucket.
@@ -726,7 +725,71 @@ describe("workflow tool rendering", () => {
     };
     const text = renderToText(tool.renderResult({ content: [{ type: "text", text: "x" }], details }, {}, theme));
     // Active phase is visible and marked current, not collapsed to the flat list.
-    expect(text).toContain("▶ scan 0/0");
+    expect(text).toContain("▶ scan running · 0/0");
+  });
+
+  it("does not keep the final current phase running after workflow completion", () => {
+    const theme = makeMockTheme();
+    const details: WorkflowToolDetails = {
+      name: "done-phase",
+      status: "completed",
+      agentCount: 1,
+      phases: ["review"],
+      currentPhase: "review",
+      agents: [{ index: 1, label: "review-a", phase: "review", status: "done" }],
+      logs: [],
+    };
+    const text = renderToText(tool.renderResult({ content: [{ type: "text", text: "x" }], details }, {}, theme));
+    expect(text).toContain("✓ review done · 1/1");
+    expect(text).not.toContain("▶ review running · 1/1");
+  });
+
+  it("marks failed current phases as failed", () => {
+    const theme = makeMockTheme();
+    const failedAgent: WorkflowToolDetails = {
+      name: "failed-phase",
+      status: "running",
+      agentCount: 1,
+      phases: ["verify"],
+      currentPhase: "verify",
+      agents: [{ index: 1, label: "verify-a", phase: "verify", status: "error" }],
+      logs: [],
+    };
+    const failedEmpty: WorkflowToolDetails = {
+      name: "failed-empty",
+      status: "error",
+      agentCount: 0,
+      phases: ["verify"],
+      currentPhase: "verify",
+      agents: [],
+      logs: [],
+      error: "script blew up",
+    };
+    const failedAgentText = renderToText(tool.renderResult({ content: [{ type: "text", text: "x" }], details: failedAgent }, {}, theme));
+    const failedEmptyText = renderToText(tool.renderResult({ content: [{ type: "text", text: "x" }], details: failedEmpty }, {}, theme));
+    expect(failedAgentText).toContain("✗ verify failed · 0/1");
+    expect(failedEmptyText).toContain("✗ verify failed · 0/0");
+  });
+
+  it("shows planned meta phases before they are reached", () => {
+    const theme = makeMockTheme();
+    const details: WorkflowToolDetails = {
+      name: "planned",
+      status: "running",
+      agentCount: 1,
+      phases: ["scan"],
+      plannedPhases: [{ title: "scan" }, { title: "review" }, { title: "fix" }],
+      currentPhase: "scan",
+      agents: [{ index: 1, label: "scan-a", phase: "scan", status: "running" }],
+      logs: [],
+    };
+    const text = renderToText(tool.renderResult({ content: [{ type: "text", text: "x" }], details }, {}, theme));
+    expect(text).toContain("▶ scan running · 0/1");
+    expect(text).toContain("· review planned · 0/0");
+    expect(text).toContain("· fix planned · 0/0");
+    expect(text.indexOf("scan")).toBeLessThan(text.indexOf("review"));
+    expect(text.indexOf("review")).toBeLessThan(text.indexOf("fix"));
+    expect(text).toContain("Agent(agent: scan-a)");
   });
 
   it("keeps a flat list when no agent has a phase", () => {
@@ -841,8 +904,8 @@ describe("workflow tool rendering", () => {
       logs: [],
     };
     const text = renderToText(tool.renderResult({ content: [{ type: "text", text: "x" }], details }, {}, theme));
-    expect(text).toContain("✓ loop1:opt 2/2");
-    expect(text).toContain("▶ loop2:opt 0/8 · 8 running");
+    expect(text).toContain("✓ loop1:opt done · 2/2");
+    expect(text).toContain("▶ loop2:opt running · 0/8");
     expect(text).toContain("... 2 more");
     expect(text.indexOf("loop1:opt")).toBeLessThan(text.indexOf("loop2:opt"));
   });
@@ -887,7 +950,7 @@ describe("workflow tool rendering", () => {
     );
     expect(completedText).toContain("Workflow(done-flow)");
     expect(completedText).toContain("completed");
-    expect(completedText).toContain("1/1 done");
+    expect(completedText).toContain("completed · 1/1");
 
     const failed: WorkflowToolDetails = {
       name: "broke",

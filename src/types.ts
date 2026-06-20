@@ -1,3 +1,5 @@
+import type { WorkflowMetaPhase } from "./workflow/types.ts";
+
 export type SubagentType = string;
 export type SubagentBackend = "pi" | "codex" | "claude";
 export type ThinkingLevel = string;
@@ -59,6 +61,7 @@ export interface WorkflowToolDetails {
   status: "running" | "completed" | "error" | "aborted";
   agentCount: number;
   phases: string[];
+  plannedPhases?: WorkflowMetaPhase[];
   currentPhase?: string;
   agents: WorkflowAgentSnapshot[];
   logs: string[];
