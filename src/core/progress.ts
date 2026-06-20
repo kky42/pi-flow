@@ -164,6 +164,41 @@ export function extractFinalAssistantText(messages: readonly unknown[]): string 
   return "";
 }
 
+/**
+ * Detect a terminal model failure on the final assistant turn.
+ *
+ * pi-ai's stream contract does NOT throw or reject for request/model/runtime
+ * failures (rate limits, quota exhaustion, provider 4xx/5xx, etc.). It encodes
+ * them as a final AssistantMessage with stopReason "error" (or "aborted") and an
+ * errorMessage, so `session.prompt()` resolves normally even when the turn never
+ * produced a real completion. A caller that treats "prompt() resolved" as
+ * success would mark such a run "done" with empty output and zero tokens.
+ *
+ * Returns the failure of the LAST assistant turn (the terminal one), or
+ * undefined when that turn ended normally ("stop"/"length"/"toolUse").
+ */
+export function getFinalAssistantFailure(
+  messages: readonly unknown[],
+): { stopReason: "error" | "aborted"; errorMessage?: string } | undefined {
+  for (let i = messages.length - 1; i >= 0; i--) {
+    const message = messages[i] as { role?: string; stopReason?: string; errorMessage?: string };
+    if (message.role !== "assistant") {
+      continue;
+    }
+    if (message.stopReason === "error" || message.stopReason === "aborted") {
+      return {
+        stopReason: message.stopReason,
+        ...(typeof message.errorMessage === "string" && message.errorMessage
+          ? { errorMessage: message.errorMessage }
+          : {}),
+      };
+    }
+    // The terminal assistant turn ended normally; not a failure.
+    return undefined;
+  }
+  return undefined;
+}
+
 export function extractLatestCacheHitRate(messages: readonly unknown[]): number | undefined {
   for (let i = messages.length - 1; i >= 0; i--) {
     const message = messages[i] as {

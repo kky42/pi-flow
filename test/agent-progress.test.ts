@@ -178,6 +178,97 @@ describe("pi-subagent progress and status", () => {
     disposeSession(session);
   });
 
+  it("marks a pi subagent error when the final turn ends with stopReason error", async () => {
+    const { session, registration, model, modelRegistry } = await createSession();
+    const profile = getSubagentProfiles(agentDir).get("general-purpose");
+    expect(profile).toBeDefined();
+    const progressUpdates: any[] = [];
+    let usageUpdates = 0;
+
+    // pi-ai never throws for model/request failures (e.g. a rate-limit / quota
+    // hit). It resolves the turn with stopReason "error" and an errorMessage, so
+    // a backend that only treats a thrown prompt() as failure would mark this
+    // hollow turn "done". The subagent must report it as an error instead.
+    //
+    // pi's AgentSession retries a stopReason-"error" turn (default maxRetries: 3,
+    // baseDelayMs: 2000) before giving up. Disable retry for this subagent
+    // session so the single injected error turn is terminal — keeping the test
+    // fast and deterministic. spawnSubagent reads settings from agentDir on disk
+    // via SettingsManager.create.
+    writeFileSync(join(agentDir, "settings.json"), JSON.stringify({ retry: { enabled: false } }));
+    registration.setResponses([
+      fauxAssistantMessage("", { stopReason: "error", errorMessage: "rate limit exceeded (429)" }),
+    ]);
+
+    const result = await spawnSubagent({
+      toolCallId: "spawn-error-stop-reason",
+      description: "Research config",
+      prompt: "Inspect config loading.",
+      profile: profile!,
+      model,
+      thinkingLevel: "high",
+      ctx: makeExecutionContext({ hasUI: false, model, modelRegistry }) as unknown as ExtensionContext,
+      signal: undefined,
+      progressEnabled: true,
+      onProgress: (partial) => progressUpdates.push(partial),
+      onUsage: () => {
+        usageUpdates++;
+      },
+      excludeTools: CHILD_EXCLUDED_TOOLS,
+    });
+
+    expect(result.details.status).toBe("error");
+    expect(result.details.error).toContain("rate limit exceeded");
+    expect(result.details.progress?.status).toBe("error");
+    expect(result.details.result).toBeUndefined();
+    expect(result.content[0].text).toContain("rate limit exceeded");
+    expect(usageUpdates).toBeGreaterThan(0);
+    // Exactly one provider call: retry is disabled, so the injected error turn
+    // is terminal (no retries drained the queue).
+    expect(registration.getPendingResponseCount()).toBe(0);
+
+    disposeSession(session);
+  });
+
+  it("reports a provider-side stopReason aborted (no signal abort) as an error, not aborted", async () => {
+    const { session, registration, model, modelRegistry } = await createSession();
+    const profile = getSubagentProfiles(agentDir).get("general-purpose");
+    expect(profile).toBeDefined();
+
+    // A terminal "aborted" turn that WE did not trigger (the spawn signal never
+    // aborts). spawnSubagent derives status from signal?.aborted, so this is
+    // reported as an error. With no errorMessage, the synthesized message must
+    // stay status-neutral: framed as a failure, with the stopReason only as a
+    // diagnostic detail — never claiming the run was "aborted".
+    writeFileSync(join(agentDir, "settings.json"), JSON.stringify({ retry: { enabled: false } }));
+    registration.setResponses([fauxAssistantMessage("", { stopReason: "aborted" })]);
+
+    const result = await spawnSubagent({
+      toolCallId: "spawn-provider-aborted",
+      description: "Research config",
+      prompt: "Inspect config loading.",
+      profile: profile!,
+      model,
+      thinkingLevel: "high",
+      ctx: makeExecutionContext({ hasUI: false, model, modelRegistry }) as unknown as ExtensionContext,
+      signal: undefined,
+      progressEnabled: true,
+      onProgress: () => {},
+      onUsage: () => {},
+      excludeTools: CHILD_EXCLUDED_TOOLS,
+    });
+
+    expect(result.details.status).toBe("error");
+    expect(result.details.progress?.status).toBe("error");
+    // stopReason retained as a diagnostic detail, but framed as a failure that
+    // matches the "error" status rather than asserting an abort.
+    expect(result.details.error).toContain("stopReason: aborted");
+    expect(result.content[0].text).toContain("failed:");
+    expect(result.content[0].text).not.toContain("aborted:");
+
+    disposeSession(session);
+  });
+
   it("reports a configured direct subagent timeout as a timeout", async () => {
     const { session, registration, model, modelRegistry } = await createSession({ subagentTimeoutMs: 20 });
     const tool = session.getToolDefinition("Agent") as any;

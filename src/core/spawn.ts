@@ -10,6 +10,7 @@ import {
 import {
   createProgressNode,
   extractFinalAssistantText,
+  getFinalAssistantFailure,
   getSubagentUsage,
   PROGRESS_HEARTBEAT_INTERVAL_MS,
   PROGRESS_UPDATE_INTERVAL_MS,
@@ -240,6 +241,22 @@ export async function spawnSubagent(params: SpawnSubagentParams): Promise<AgentT
     emitProgress();
     startProgressHeartbeat();
     await session.prompt(taskPrompt, { source: "extension" });
+    // pi-ai encodes model/request failures (rate limits, quota exhaustion,
+    // provider errors) as a final assistant turn with stopReason "error"/
+    // "aborted" instead of throwing, so prompt() resolves even when nothing was
+    // produced. Treat that terminal failure as an error rather than reporting a
+    // hollow "(no final text output)" success.
+    const failure = getFinalAssistantFailure(session.messages);
+    if (failure) {
+      // The catch below derives the reported status from whether OUR signal
+      // aborted (signal?.aborted ? "aborted" : "error"), so a provider-reported
+      // stopReason "aborted" that we did not trigger is surfaced as an error.
+      // Keep this fallback message status-neutral — quote the stopReason as a
+      // diagnostic detail rather than asserting the run was "aborted".
+      throw new Error(
+        failure.errorMessage || `Subagent model turn did not complete (stopReason: ${failure.stopReason}).`,
+      );
+    }
     const result = extractFinalAssistantText(session.messages) || "(no final text output)";
     const usage = getSubagentUsage(session);
     onUsage(usage);
