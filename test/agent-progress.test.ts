@@ -160,6 +160,7 @@ describe("pi-subagent progress and status", () => {
       thinkingLevel: "high",
       ctx: makeExecutionContext({ hasUI: false, model, modelRegistry }) as unknown as ExtensionContext,
       signal: controller.signal,
+      timeoutMs: 0,
       progressEnabled: true,
       onProgress: (partial) => progressUpdates.push(partial),
       onUsage: () => {
@@ -209,6 +210,7 @@ describe("pi-subagent progress and status", () => {
       thinkingLevel: "high",
       ctx: makeExecutionContext({ hasUI: false, model, modelRegistry }) as unknown as ExtensionContext,
       signal: undefined,
+      timeoutMs: 0,
       progressEnabled: true,
       onProgress: (partial) => progressUpdates.push(partial),
       onUsage: () => {
@@ -252,6 +254,7 @@ describe("pi-subagent progress and status", () => {
       thinkingLevel: "high",
       ctx: makeExecutionContext({ hasUI: false, model, modelRegistry }) as unknown as ExtensionContext,
       signal: undefined,
+      timeoutMs: 0,
       progressEnabled: true,
       onProgress: () => {},
       onUsage: () => {},

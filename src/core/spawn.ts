@@ -18,7 +18,8 @@ import {
 } from "./progress.ts";
 import { spawnClaudeSubagent } from "./claude.ts";
 import { spawnCodexSubagent } from "./codex.ts";
-import type { SubagentProfile, SubagentUsage } from "../types.ts";
+import type { SubagentProfile, SubagentToolDetails, SubagentUsage } from "../types.ts";
+import { createTimeoutSignal, markSubagentTimedOut } from "./timeout.ts";
 
 /**
  * The delegation tools a spawned child must never receive, so subagents cannot
@@ -29,8 +30,9 @@ export const CHILD_EXCLUDED_TOOLS: readonly string[] = ["Agent", "workflow"];
 
 /**
  * Parameters for a single subagent run. This is the shared spawn primitive used
- * by both the `Agent` tool and (later) the `workflow` tool's `agent()` global.
- * Concurrency accounting lives in the callers, not here.
+ * by both the `Agent` tool and the `workflow` tool's `agent()` global.
+ * Concurrency accounting lives in the callers, not here; callers acquire a slot
+ * before invoking spawnSubagent, so the runtime timeout below excludes queue time.
  */
 export interface SpawnSubagentParams {
   toolCallId: string;
@@ -41,6 +43,8 @@ export interface SpawnSubagentParams {
   thinkingLevel: string | undefined;
   ctx: ExtensionContext;
   signal: AbortSignal | undefined;
+  /** Maximum wall-clock runtime once this spawn starts. Set 0 to disable. */
+  timeoutMs: number;
   progressEnabled: boolean;
   onProgress: ((result: AgentToolResult) => void) | undefined;
   onUsage: (usage: SubagentUsage) => void;
@@ -54,7 +58,39 @@ export interface SpawnSubagentParams {
   outputSchema?: unknown;
 }
 
+function rewriteTimeoutResult(
+  result: AgentToolResult,
+  params: { description: string; profile: SubagentProfile; timeoutMs: number },
+): AgentToolResult {
+  const details = markSubagentTimedOut(result.details as SubagentToolDetails, params.timeoutMs);
+  const message = details.error;
+  return textResult(`Subagent "${params.description}" (${params.profile.name}) aborted: ${message}`, {
+    ...details,
+    description: params.description,
+    subagentType: params.profile.name,
+    backend: params.profile.backend,
+    status: "aborted",
+  });
+}
+
 export async function spawnSubagent(params: SpawnSubagentParams): Promise<AgentToolResult> {
+  const timeout = createTimeoutSignal(params.signal, params.timeoutMs, params.description);
+  let result: AgentToolResult;
+  try {
+    result = await spawnSubagentRuntime({ ...params, signal: timeout.signal });
+  } finally {
+    timeout.cleanup();
+  }
+  return timeout.timedOut()
+    ? rewriteTimeoutResult(result, {
+        description: params.description,
+        profile: params.profile,
+        timeoutMs: params.timeoutMs,
+      })
+    : result;
+}
+
+async function spawnSubagentRuntime(params: SpawnSubagentParams): Promise<AgentToolResult> {
   if (params.profile.backend === "codex") {
     return spawnCodexSubagent({
       toolCallId: params.toolCallId,

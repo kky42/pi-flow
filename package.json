@@ -1,6 +1,6 @@
 {
   "name": "@kky42/pi-flow",
-  "version": "1.0.9",
+  "version": "1.0.10",
   "description": "Multi-backend subagents and dynamic workflow orchestration for pi.",
   "type": "module",
   "main": "./index.ts",

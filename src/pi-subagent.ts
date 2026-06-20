@@ -23,7 +23,6 @@ import { CHILD_EXCLUDED_TOOLS, spawnSubagent } from "./core/spawn.ts";
 import { createProgressNode, textResult, type AgentToolResult } from "./core/progress.ts";
 import { formatUsage, renderSubagentNode } from "./core/subagent-render.ts";
 import { SPINNER_INTERVAL_MS } from "./core/spinner.ts";
-import { createTimeoutSignal, formatDurationMs, markSubagentTimedOut } from "./core/timeout.ts";
 import { createWorkflowTool } from "./workflow/tool.ts";
 import { listSavedWorkflows } from "./workflow/registry.ts";
 import type {
@@ -129,21 +128,6 @@ function normalizeSubagentTimeoutMs(value: number | string | boolean | undefined
     throw new Error(`${label} must be a non-negative integer`);
   }
   return parsed;
-}
-
-function rewriteTimeoutResult(
-  result: AgentToolResult,
-  params: { description: string; subagentType: string; profile: SubagentProfile; timeoutMs: number },
-): AgentToolResult {
-  const details = markSubagentTimedOut(result.details as SubagentToolDetails, params.timeoutMs);
-  const message = details.error;
-  return textResult(`Subagent "${params.description}" (${params.subagentType}) aborted: ${message}`, {
-    ...details,
-    description: params.description,
-    subagentType: params.subagentType,
-    backend: params.profile.backend,
-    status: "aborted",
-  });
 }
 
 function normalizeSubagentType(value: string | undefined): SubagentType {
@@ -383,44 +367,30 @@ function createAgentTool(
       }
 
       try {
-        const timeoutMs = options.getSubagentTimeoutMs();
-        const timeout = createTimeoutSignal(signal, timeoutMs, params.description);
-        let result: AgentToolResult;
-        try {
-          result = await spawnSubagent({
-            toolCallId,
-            description: params.description,
-            prompt: params.prompt,
-            profile,
-            model,
-            thinkingLevel: profile.thinking ?? options.getThinkingLevel(),
-            ctx,
-            signal: timeout.signal,
-            progressEnabled: effectiveState.progressEnabled,
-            onProgress: effectiveState.progressEnabled && run
-              ? (partial) => {
-                  const details = partial.details as SubagentToolDetails;
-                  if (details.progress) {
-                    run.progress = details.progress;
-                  }
-                  emitActiveRunUpdate(state, run);
+        const result = await spawnSubagent({
+          toolCallId,
+          description: params.description,
+          prompt: params.prompt,
+          profile,
+          model,
+          thinkingLevel: profile.thinking ?? options.getThinkingLevel(),
+          ctx,
+          signal,
+          timeoutMs: options.getSubagentTimeoutMs(),
+          progressEnabled: effectiveState.progressEnabled,
+          onProgress: effectiveState.progressEnabled && run
+            ? (partial) => {
+                const details = partial.details as SubagentToolDetails;
+                if (details.progress) {
+                  run.progress = details.progress;
                 }
-              : undefined,
-            onUsage: (usage) => options.updateStatus(ctx, toolCallId, usage),
-            excludeTools: CHILD_EXCLUDED_TOOLS,
-          });
-        } finally {
-          timeout.cleanup();
-        }
-        const finalResult = timeout.timedOut()
-          ? rewriteTimeoutResult(result, {
-              description: params.description,
-              subagentType,
-              profile,
-              timeoutMs,
-            })
-          : result;
-        const details = finalResult.details as SubagentToolDetails;
+                emitActiveRunUpdate(state, run);
+              }
+            : undefined,
+          onUsage: (usage) => options.updateStatus(ctx, toolCallId, usage),
+          excludeTools: CHILD_EXCLUDED_TOOLS,
+        });
+        const details = result.details as SubagentToolDetails;
         if (run && details.progress) {
           run.progress = details.progress;
         }
@@ -429,7 +399,7 @@ function createAgentTool(
           details.activeCount = getRunningRunCount(state);
           details.frame = state.frame;
         }
-        return finalResult;
+        return result;
       } finally {
         release();
         if (run) {

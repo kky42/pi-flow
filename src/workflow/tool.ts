@@ -10,7 +10,6 @@ import { Container, Text } from "@earendil-works/pi-tui";
 import type { ConcurrencyLimiter } from "../core/concurrency.ts";
 import { isActiveSubagentStatus, isCompletedSubagentStatus, renderSubagentNode } from "../core/subagent-render.ts";
 import { SPINNER_INTERVAL_MS } from "../core/spinner.ts";
-import { createTimeoutSignal, markSubagentTimedOut } from "../core/timeout.ts";
 import { filterProfilesForModelRegistry, resolveProfileModel, usesPiBackend } from "../core/model.ts";
 import { CHILD_EXCLUDED_TOOLS, spawnSubagent } from "../core/spawn.ts";
 import { getSubagentProfiles } from "../profiles.ts";
@@ -168,47 +167,39 @@ export function createWorkflowTool(
 
         const childIndex = call.index ?? ++agentSeq;
         const childId = `${toolCallId}:agent:${childIndex}`;
-        const timeoutMs = options.getSubagentTimeoutMs();
-        const timeout = createTimeoutSignal(agentSignal, timeoutMs, call.label);
-        let result: Awaited<ReturnType<typeof spawnSubagent>>;
-        try {
-          result = await spawnSubagent({
-            toolCallId: childId,
-            description: call.label,
-            prompt: call.prompt,
-            profile,
-            model,
-            thinkingLevel: profile.thinking ?? options.getThinkingLevel(),
-            ctx,
-            signal: timeout.signal,
-            progressEnabled: true,
-            onProgress: (partial) => {
-              const details = partial.details as SubagentToolDetails;
-              const agent = snapshot.agents.find((item) => item.index === childIndex);
-              if (agent && details.progress) {
-                agent.startedAt = details.progress.startedAt;
-                agent.endedAt = details.progress.endedAt;
-                agent.activity = [...details.progress.activity];
-                agent.activityCount = details.progress.activityCount;
-                agent.result = details.progress.result;
-                agent.error = details.progress.error;
-                agent.usage = details.progress.usage;
-                agent.status = details.progress.status;
-                emit();
-              }
-            },
-            onUsage: (usage) => options.updateStatus(ctx, childId, usage),
-            excludeTools: CHILD_EXCLUDED_TOOLS,
-            appendInstructions,
-            customTools,
-            outputSchema: externalOutputSchema ? call.schema : undefined,
-          });
-        } finally {
-          timeout.cleanup();
-        }
-        const resultDetails = timeout.timedOut()
-          ? markSubagentTimedOut(result.details as SubagentToolDetails, timeoutMs)
-          : (result.details as SubagentToolDetails);
+        const result = await spawnSubagent({
+          toolCallId: childId,
+          description: call.label,
+          prompt: call.prompt,
+          profile,
+          model,
+          thinkingLevel: profile.thinking ?? options.getThinkingLevel(),
+          ctx,
+          signal: agentSignal,
+          timeoutMs: options.getSubagentTimeoutMs(),
+          progressEnabled: true,
+          onProgress: (partial) => {
+            const details = partial.details as SubagentToolDetails;
+            const agent = snapshot.agents.find((item) => item.index === childIndex);
+            if (agent && details.progress) {
+              agent.startedAt = details.progress.startedAt;
+              agent.endedAt = details.progress.endedAt;
+              agent.activity = [...details.progress.activity];
+              agent.activityCount = details.progress.activityCount;
+              agent.result = details.progress.result;
+              agent.error = details.progress.error;
+              agent.usage = details.progress.usage;
+              agent.status = details.progress.status;
+              emit();
+            }
+          },
+          onUsage: (usage) => options.updateStatus(ctx, childId, usage),
+          excludeTools: CHILD_EXCLUDED_TOOLS,
+          appendInstructions,
+          customTools,
+          outputSchema: externalOutputSchema ? call.schema : undefined,
+        });
+        const resultDetails = result.details as SubagentToolDetails;
         const agent = snapshot.agents.find((item) => item.index === childIndex);
         if (agent) {
           const progress = resultDetails.progress;
