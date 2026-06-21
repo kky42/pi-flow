@@ -63,6 +63,7 @@
   3. Commit and push `main`.
   4. Stop and ask the user before publishing. Only run `npm publish --access public` when the user explicitly asks for a manual publish from the local authenticated npm session.
   5. After a successful publish, create and push an annotated Git tag for the exact published commit: `git tag -a vX.Y.Z -m "vX.Y.Z" <commit>` then `git push origin vX.Y.Z`.
+  6. Create a GitHub Release for that tag with concise release notes, so GitHub tags/releases act as the public changelog: `gh release create vX.Y.Z --title "vX.Y.Z" --notes "..."`.
 - `pi.dev` updates from the npm package manifest automatically after a successful npm publish.
 
 ## References Read
