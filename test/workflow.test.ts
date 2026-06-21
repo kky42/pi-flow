@@ -701,10 +701,10 @@ describe("workflow tool rendering", () => {
     expect(text).toContain("Workflow(audit)");
     expect(text).toContain("running");
     expect(text).toContain("running · 1/3");
-    // scan phase is complete (beta done) -> ✓ header; unphased bucket has a failure.
+    // scan phase is complete (beta done) -> ✓ header; unphased bucket is still running despite a failed branch.
     expect(text).toContain("✓ scan done · 1/1");
     expect(text).toContain("✓ Codex Agent(codex-reviewer, beta)");
-    expect(text).toContain("✗ unphased failed · 0/2");
+    expect(text).toContain("▶ unphased running · 0/2");
     expect(text).toContain("Pi Agent(explorer: alpha)");
     expect(text).toContain("✗ Claude Agent(claude-reviewer, gamma)");
     // declared phase renders before the unphased bucket.
@@ -744,7 +744,7 @@ describe("workflow tool rendering", () => {
     expect(text).not.toContain("▶ review running · 1/1");
   });
 
-  it("marks failed current phases as failed", () => {
+  it("marks wholly failed phases as failed and mixed failures as partial", () => {
     const theme = makeMockTheme();
     const failedAgent: WorkflowToolDetails = {
       name: "failed-phase",
@@ -753,6 +753,18 @@ describe("workflow tool rendering", () => {
       phases: ["verify"],
       currentPhase: "verify",
       agents: [{ index: 1, label: "verify-a", phase: "verify", status: "error" }],
+      logs: [],
+    };
+    const partialAgent: WorkflowToolDetails = {
+      name: "partial-phase",
+      status: "completed",
+      agentCount: 2,
+      phases: ["verify"],
+      currentPhase: "verify",
+      agents: [
+        { index: 1, label: "verify-a", phase: "verify", status: "done" },
+        { index: 2, label: "verify-b", phase: "verify", status: "error" },
+      ],
       logs: [],
     };
     const failedEmpty: WorkflowToolDetails = {
@@ -766,8 +778,10 @@ describe("workflow tool rendering", () => {
       error: "script blew up",
     };
     const failedAgentText = renderToText(tool.renderResult({ content: [{ type: "text", text: "x" }], details: failedAgent }, {}, theme));
+    const partialAgentText = renderToText(tool.renderResult({ content: [{ type: "text", text: "x" }], details: partialAgent }, {}, theme));
     const failedEmptyText = renderToText(tool.renderResult({ content: [{ type: "text", text: "x" }], details: failedEmpty }, {}, theme));
     expect(failedAgentText).toContain("✗ verify failed · 0/1");
+    expect(partialAgentText).toContain("⚠ verify partial · 1/2");
     expect(failedEmptyText).toContain("✗ verify failed · 0/0");
   });
 

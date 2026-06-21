@@ -4,6 +4,7 @@ import {
   type ExtensionAPI,
   type ExtensionContext,
   type Theme,
+  type ThemeColor,
   type ToolDefinition,
 } from "@earendil-works/pi-coding-agent";
 import { Container, Text } from "@earendil-works/pi-tui";
@@ -440,6 +441,22 @@ function workflowRunningCount(details: WorkflowToolDetails): number {
   return details.agents.filter((agent) => agent.status === "running").length;
 }
 
+type WorkflowPhaseRenderStatus = "planned" | "running" | "done" | "partial" | "failed";
+
+function phaseRenderMarker(status: WorkflowPhaseRenderStatus): string {
+  if (status === "failed") return "✗";
+  if (status === "partial") return "⚠";
+  if (status === "done") return "✓";
+  if (status === "running") return "▶";
+  return "·";
+}
+
+function phaseRenderColor(status: WorkflowPhaseRenderStatus, failedAgentCount: number): ThemeColor {
+  if (status === "failed") return "error";
+  if (status === "partial" || failedAgentCount > 0) return "warning";
+  return "muted";
+}
+
 function renderPhaseTree(container: Container, details: WorkflowToolDetails, theme: Theme, frame: number): void {
   const runningCount = workflowRunningCount(details);
   for (const phase of orderedPhases(details)) {
@@ -452,21 +469,22 @@ function renderPhaseTree(container: Container, details: WorkflowToolDetails, the
     const reached = phase === undefined || details.phases.includes(phase);
     const workflowRunning = details.status === "running";
     const workflowFailed = details.status === "error" || details.status === "aborted";
-    const phaseStatus = pErr > 0 || (workflowFailed && isCurrent && agents.length === 0)
-      ? "failed"
-      : pRun > 0 || pQueued > 0 || (workflowRunning && isCurrent)
-        ? "running"
-        : agents.length > 0 || reached
-          ? "done"
-          : "planned";
-    const marker = phaseStatus === "failed" ? "✗" : phaseStatus === "done" ? "✓" : phaseStatus === "running" ? "▶" : "·";
-    container.addChild(
-      new Text(
-        `  ${theme.fg(pErr ? "error" : "muted", `${marker} ${phase ?? "unphased"} ${phaseStatus} · ${pDone}/${agents.length}`)}`,
-        0,
-        0,
-      ),
-    );
+    // A failed branch should not sink a whole fan-out phase. Keep active phases running;
+    // once the wave settles, show mixed outcomes as partial and reserve failed for
+    // fatal empty phases or phases where every launched agent failed.
+    const phaseStatus: WorkflowPhaseRenderStatus =
+      (workflowFailed && isCurrent && agents.length === 0) || (agents.length > 0 && pErr === agents.length)
+        ? "failed"
+        : pRun > 0 || pQueued > 0 || (workflowRunning && isCurrent)
+          ? "running"
+          : pErr > 0
+            ? "partial"
+            : agents.length > 0 || reached
+              ? "done"
+              : "planned";
+    const marker = phaseRenderMarker(phaseStatus);
+    const header = `${marker} ${phase ?? "unphased"} ${phaseStatus} · ${pDone}/${agents.length}`;
+    container.addChild(new Text(`  ${theme.fg(phaseRenderColor(phaseStatus, pErr), header)}`, 0, 0));
     const shown = selectAgentsForRender(agents);
     for (const agent of shown) {
       container.addChild(renderSubagentNode(agent, theme, frame, runningCount, "    "));
