@@ -62,6 +62,7 @@
   2. Run `npm run check` (and manual E2E when warranted).
   3. Commit and push `main`.
   4. Stop and ask the user before publishing. Only run `npm publish --access public` when the user explicitly asks for a manual publish from the local authenticated npm session.
+  5. After a successful publish, create and push an annotated Git tag for the exact published commit: `git tag -a vX.Y.Z -m "vX.Y.Z" <commit>` then `git push origin vX.Y.Z`.
 - `pi.dev` updates from the npm package manifest automatically after a successful npm publish.
 
 ## References Read
