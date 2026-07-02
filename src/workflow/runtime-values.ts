@@ -1,7 +1,10 @@
+import { normalizeSessionKey } from "../core/session-key.ts";
+
 export interface NormalizedAgentOptions {
   label?: string;
   phase?: string;
   subagentType?: string;
+  sessionKey?: string;
   schema?: unknown;
 }
 
@@ -30,6 +33,7 @@ export function normalizeAgentOptions(value: unknown): NormalizedAgentOptions {
     label: optionalString(options.label, "agent label"),
     phase: optionalString(options.phase, "agent phase"),
     subagentType: optionalString(options.subagent_type, "agent subagent_type"),
+    sessionKey: normalizeSessionKey(optionalString(options.session_key, "agent session_key")),
     schema: options.schema,
   };
 }

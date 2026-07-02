@@ -58,6 +58,7 @@ describe("pi-subagent agent contract", () => {
     expect(properties).toHaveProperty("description");
     expect(properties).toHaveProperty("prompt");
     expect(properties).toHaveProperty("subagent_type");
+    expect(properties).toHaveProperty("session_key");
     expect(properties).not.toHaveProperty("run_in_background");
     expect(properties).not.toHaveProperty("resume");
     expect(properties).not.toHaveProperty("model");
@@ -72,7 +73,7 @@ describe("pi-subagent agent contract", () => {
     disposeSession(session);
   });
 
-  it("marks description and prompt required, subagent_type optional, and adds no tag/label fields", async () => {
+  it("marks description and prompt required, subagent_type/session_key optional, and adds no tag/label fields", async () => {
     const { session } = await createSession();
 
     const tool = session.getAllTools().find((candidate) => candidate.name === "Agent");
@@ -80,6 +81,7 @@ describe("pi-subagent agent contract", () => {
     expect(schema?.required).toContain("description");
     expect(schema?.required).toContain("prompt");
     expect(schema?.required ?? []).not.toContain("subagent_type");
+    expect(schema?.required ?? []).not.toContain("session_key");
     expect(schema?.properties).not.toHaveProperty("tag");
     expect(schema?.properties).not.toHaveProperty("label");
 
@@ -207,6 +209,9 @@ describe("pi-subagent agent contract", () => {
     expect(tool).toBeDefined();
     expect((tool?.parameters as { properties: Record<string, unknown> }).properties).toHaveProperty(
       "subagent_type",
+    );
+    expect((tool?.parameters as { properties: Record<string, unknown> }).properties).toHaveProperty(
+      "session_key",
     );
 
     disposeSession(session);

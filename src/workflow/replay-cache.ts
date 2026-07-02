@@ -2,13 +2,17 @@ import { createHash } from "node:crypto";
 import type { WorkflowAgentCall } from "./types.ts";
 
 export function fingerprintWorkflowAgentCall(call: WorkflowAgentCall): string {
-  return hashStableValue({
+  const value: Record<string, unknown> = {
     prompt: call.prompt,
     label: call.label,
     phase: call.phase,
     subagentType: call.subagentType,
     schema: call.schema,
-  });
+  };
+  if (call.sessionKey !== undefined) {
+    value.sessionKey = call.sessionKey;
+  }
+  return hashStableValue(value);
 }
 
 export function hashStableValue(value: unknown): string {

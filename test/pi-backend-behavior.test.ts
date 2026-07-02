@@ -88,6 +88,56 @@ describe("pi-subagent pi backend behavior", () => {
     disposeSession(session);
   });
 
+  it("resumes the child context when session_key is reused", async () => {
+    const { session, registration, sessionManager } = await createSession();
+    let firstChildContext: Context | undefined;
+    let secondChildContext: Context | undefined;
+    let rootContinuationContext: Context | undefined;
+
+    registration.setResponses([
+      fauxAssistantMessage([fauxToolCall("Agent", {
+        description: "Initial draft",
+        prompt: "Initial draft prompt.",
+        session_key: "worker",
+      })], { stopReason: "toolUse" }),
+      (context) => {
+        firstChildContext = context;
+        return fauxAssistantMessage("draft v1");
+      },
+      fauxAssistantMessage([fauxToolCall("Agent", {
+        description: "Revise draft",
+        prompt: "Reviewer says tighten the argument.",
+        session_key: "worker",
+      })], { stopReason: "toolUse" }),
+      (context) => {
+        secondChildContext = context;
+        return fauxAssistantMessage("draft v2");
+      },
+      (context) => {
+        rootContinuationContext = context;
+        return fauxAssistantMessage("reported");
+      },
+    ]);
+
+    await session.prompt("Create and revise with the same worker.");
+
+    expect(JSON.stringify(firstChildContext?.messages)).toContain("Initial draft prompt.");
+    const resumedMessages = JSON.stringify(secondChildContext?.messages);
+    expect(resumedMessages).toContain("Initial draft prompt.");
+    expect(resumedMessages).toContain("draft v1");
+    expect(resumedMessages).toContain("Reviewer says tighten the argument.");
+    expect(resumedMessages).not.toContain("Create and revise with the same worker.");
+    const rootMessages = JSON.stringify(rootContinuationContext?.messages);
+    expect(rootMessages).not.toContain("session_id:");
+    expect(rootMessages).not.toContain("sessionId");
+    const mappingEntries = sessionManager.getEntries().filter((entry: any) => entry.type === "custom" && entry.customType === "pi-flow-subagent-session-key") as any[];
+    expect(mappingEntries).toHaveLength(1);
+    expect(mappingEntries[0]?.data).toMatchObject({ key: "worker", subagentType: "general-purpose", backend: "pi" });
+    expect(mappingEntries[0]?.data.sessionId).toEqual(expect.any(String));
+
+    disposeSession(session);
+  });
+
   it("preserves discovered append system prompts in child sessions", async () => {
     const piDir = join(cwd, ".pi");
     mkdirSync(piDir, { recursive: true });

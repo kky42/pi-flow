@@ -46,6 +46,7 @@ export interface WorkflowAgentSnapshot {
   phase?: string;
   subagentType?: string;
   backend?: SubagentBackend;
+  sessionKey?: string;
   status: SubagentRunStatus;
   startedAt?: number;
   endedAt?: number;
@@ -115,6 +116,8 @@ export interface SubagentToolDetails {
   result?: string;
   error?: string;
   usage?: SubagentUsage;
+  /** Backend-native session/thread id used internally for session_key continuation. */
+  sessionId?: string;
   progress?: SubagentProgressNode;
   /** Number of currently running subagents, used to choose rich vs compact live rendering. */
   activeCount?: number;

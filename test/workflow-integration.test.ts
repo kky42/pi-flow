@@ -77,6 +77,47 @@ describe("pi-subagent workflow integration", () => {
       disposeSession(session);
     });
 
+    it("continues a pi workflow subagent when agent() reuses session_key", async () => {
+      const { session, registration, model, modelRegistry } = await createSession();
+      const tool = session.getToolDefinition("workflow") as any;
+      let firstChildContext: Context | undefined;
+      let secondChildContext: Context | undefined;
+
+      registration.setResponses([
+        (context) => {
+          firstChildContext = context;
+          return fauxAssistantMessage("draft v1");
+        },
+        (context) => {
+          secondChildContext = context;
+          return fauxAssistantMessage("draft v2");
+        },
+      ]);
+
+      const script = `export const meta = { name: 'loop_worker', description: 'continue one worker' };
+await agent('Initial draft prompt.', { label: 'worker-1', session_key: 'workflow-worker' });
+return await agent('Reviewer says tighten the argument.', { label: 'worker-2', session_key: 'workflow-worker' });`;
+      const result = await tool.execute(
+        "wf-session-key",
+        { script },
+        undefined,
+        undefined,
+        makeExecutionContext({ hasUI: false, model, modelRegistry }),
+      );
+
+      expect(result.details.status).toBe("completed");
+      expect(result.details.result).toBe("draft v2");
+      expect(result.details.agents[0]?.sessionKey).toBe("workflow-worker");
+      expect(result.details.agents[1]?.sessionKey).toBe("workflow-worker");
+      expect(JSON.stringify(firstChildContext?.messages)).toContain("Initial draft prompt.");
+      const resumedMessages = JSON.stringify(secondChildContext?.messages);
+      expect(resumedMessages).toContain("Initial draft prompt.");
+      expect(resumedMessages).toContain("draft v1");
+      expect(resumedMessages).toContain("Reviewer says tighten the argument.");
+
+      disposeSession(session);
+    });
+
     it("applies the configured timeout to workflow subagents", async () => {
       const { session, registration, model, modelRegistry } = await createSession({ subagentTimeoutMs: 20 });
       const tool = session.getToolDefinition("workflow") as any;

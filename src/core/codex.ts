@@ -99,19 +99,31 @@ export function buildCodexArgs({
   prompt,
   profile,
   thinkingLevel,
+  sessionId,
+  persistSession = false,
   outputSchemaPath,
 }: {
   prompt: string;
   profile: SubagentProfile;
   thinkingLevel: ThinkingLevel | undefined;
+  sessionId?: string;
+  persistSession?: boolean;
   outputSchemaPath?: string;
 }): string[] {
   const args = [
     "exec",
+  ];
+  if (sessionId) {
+    args.push("resume");
+  }
+  args.push(
     "--json",
     "--skip-git-repo-check",
     "--dangerously-bypass-approvals-and-sandbox",
-  ];
+  );
+  if (!persistSession && !sessionId) {
+    args.push("--ephemeral");
+  }
   if (profile.systemPrompt) {
     args.push("-c", buildConfigOverrideArg("developer_instructions", profile.systemPrompt));
   }
@@ -127,7 +139,11 @@ export function buildCodexArgs({
   // Use stdin for the task prompt: prompts can be large and may begin with
   // '-' (bullet lists), both of which are fragile as argv values.
   void prompt;
-  args.push("--", "-");
+  if (sessionId) {
+    args.push(sessionId, "-");
+  } else {
+    args.push("--", "-");
+  }
   return args;
 }
 
@@ -157,6 +173,14 @@ function parseUsageRecord(value: unknown): CodexTokenUsage | undefined {
     return undefined;
   }
   return { inputTokens, cachedInputTokens, outputTokens, reasoningOutputTokens };
+}
+
+export function extractCodexSessionId(event: Record<string, unknown>): string | undefined {
+  if (event.type !== "thread.started") {
+    return undefined;
+  }
+  const candidates = [event.thread_id, event.session_id, event.id];
+  return candidates.find((candidate): candidate is string => typeof candidate === "string" && candidate.trim() !== "");
 }
 
 export function extractCodexUsage(event: Record<string, unknown>): CodexTokenUsage | undefined {
@@ -330,6 +354,8 @@ export async function spawnCodexSubagent(params: {
   onProgress: ((result: AgentToolResult) => void) | undefined;
   onUsage: (usage: SubagentUsage) => void;
   appendInstructions?: string;
+  sessionId?: string;
+  persistSession?: boolean;
   outputSchema?: unknown;
 }): Promise<AgentToolResult> {
   const subagentType = params.profile.name;
@@ -345,6 +371,7 @@ export async function spawnCodexSubagent(params: {
   const progress = emitter.progress;
   let latestUsage = emptyUsage(params.profile.model);
   let resultText = "";
+  let sessionId = params.sessionId?.trim() || undefined;
   const stderrBuffer = createBoundedBuffer(MAX_STDERR_CHARS);
   let sawTerminalEvent = false;
   let eventError: string | undefined;
@@ -357,6 +384,10 @@ export async function spawnCodexSubagent(params: {
   const handleEvent = (event: Record<string, unknown>) => {
     if (event.type === "turn.completed" || event.type === "turn.failed") {
       sawTerminalEvent = true;
+    }
+    const parsedSessionId = extractCodexSessionId(event);
+    if (params.persistSession === true && parsedSessionId) {
+      sessionId = parsedSessionId;
     }
     const activity = codexActivityFromEvent(event);
     if (activity) {
@@ -400,6 +431,8 @@ export async function spawnCodexSubagent(params: {
       prompt: taskPrompt,
       profile: params.profile,
       thinkingLevel: params.thinkingLevel,
+      sessionId,
+      persistSession: params.persistSession === true,
       outputSchemaPath: schemaFile?.path,
     });
 
@@ -514,6 +547,7 @@ export async function spawnCodexSubagent(params: {
       status: "done",
       result,
       usage: latestUsage,
+      ...(sessionId ? { sessionId } : {}),
       ...(progress ? { progress } : {}),
     });
   } catch (error) {
@@ -537,6 +571,7 @@ export async function spawnCodexSubagent(params: {
       status,
       error: message,
       usage: latestUsage,
+      ...(sessionId ? { sessionId } : {}),
       ...(progress ? { progress } : {}),
     });
   } finally {

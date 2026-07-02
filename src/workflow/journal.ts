@@ -117,7 +117,16 @@ export async function loadWorkflowJournal(dir: string, runId: string): Promise<L
     if (typeof index !== "number" || typeof fingerprint !== "string") {
       continue;
     }
-    agentResults[index - 1] = { index, fingerprint, result: entry.result, failed: entry.failed === true };
+    agentResults[index - 1] = {
+      index,
+      fingerprint,
+      result: entry.result,
+      failed: entry.failed === true,
+      sessionKey: typeof entry.sessionKey === "string" ? entry.sessionKey : undefined,
+      sessionId: typeof entry.sessionId === "string" ? entry.sessionId : undefined,
+      subagentType: typeof entry.subagentType === "string" ? entry.subagentType : undefined,
+      backend: typeof entry.backend === "string" ? entry.backend : undefined,
+    };
   }
 
   if (!seenRunStart) {
@@ -170,6 +179,9 @@ export async function createWorkflowJournalWriter(params: {
         label: event.label,
         phase: event.phase,
         subagentType: event.subagentType,
+        backend: event.backend,
+        sessionKey: event.sessionKey,
+        sessionId: event.sessionId,
         prompt: event.prompt,
         schema: event.schema,
         cached: event.cached,

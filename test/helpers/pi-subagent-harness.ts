@@ -195,7 +195,7 @@ export function setupPiSubagentTestHarness(onSetup?: (state: HarnessState) => vo
     trackSession(session);
     await session.bindExtensions({});
 
-    return { session, registration, model, models, modelRegistry };
+    return { session, registration, model, models, modelRegistry, sessionManager };
   }
 
   // Drive a single root delegation and capture the child session's context,

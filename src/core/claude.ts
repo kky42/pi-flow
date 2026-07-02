@@ -34,10 +34,14 @@ function asFiniteNumber(value: unknown): number | undefined {
 export function buildClaudeArgs({
   profile,
   thinkingLevel,
+  sessionId,
+  persistSession = false,
   outputSchema,
 }: {
   profile: SubagentProfile;
   thinkingLevel: ThinkingLevel | undefined;
+  sessionId?: string;
+  persistSession?: boolean;
   outputSchema?: unknown;
 }): string[] {
   const args = [
@@ -45,9 +49,13 @@ export function buildClaudeArgs({
     "--output-format",
     "stream-json",
     "--verbose",
-    "--no-session-persistence",
     "--dangerously-skip-permissions",
   ];
+  if (sessionId) {
+    args.push("--resume", sessionId);
+  } else if (!persistSession) {
+    args.push("--no-session-persistence");
+  }
   if (profile.systemPrompt) {
     args.push("--append-system-prompt", profile.systemPrompt);
   }
@@ -149,6 +157,13 @@ function sumModelUsageCost(value: unknown): number | undefined {
     }
   }
   return found ? total : undefined;
+}
+
+export function extractClaudeSessionId(event: Record<string, unknown>): string | undefined {
+  if (event.type !== "system" || event.subtype !== "init") {
+    return undefined;
+  }
+  return typeof event.session_id === "string" && event.session_id.trim() !== "" ? event.session_id : undefined;
 }
 
 export function extractClaudeUsage(event: Record<string, unknown>): ClaudeTokenUsage | undefined {
@@ -333,6 +348,8 @@ export async function spawnClaudeSubagent(params: {
   onProgress: ((result: AgentToolResult) => void) | undefined;
   onUsage: (usage: SubagentUsage) => void;
   appendInstructions?: string;
+  sessionId?: string;
+  persistSession?: boolean;
   outputSchema?: unknown;
 }): Promise<AgentToolResult> {
   const subagentType = params.profile.name;
@@ -350,6 +367,7 @@ export async function spawnClaudeSubagent(params: {
   let latestCostUsd: number | undefined;
   let latestUsage = claudeUsageToSubagentUsage(latestRawUsage, latestCostUsd);
   let resultText = "";
+  let sessionId = params.sessionId?.trim() || undefined;
   const stderrBuffer = createBoundedBuffer(MAX_STDERR_CHARS);
   let sawTerminalEvent = false;
   let eventError: string | undefined;
@@ -374,6 +392,10 @@ export async function spawnClaudeSubagent(params: {
   const handleEvent = (event: Record<string, unknown>) => {
     if (event.type === "result" || event.type === "error") {
       sawTerminalEvent = true;
+    }
+    const parsedSessionId = extractClaudeSessionId(event);
+    if (params.persistSession === true && parsedSessionId) {
+      sessionId = parsedSessionId;
     }
     const activity = claudeActivityFromEvent(event);
     if (activity) {
@@ -407,6 +429,8 @@ export async function spawnClaudeSubagent(params: {
     const args = buildClaudeArgs({
       profile: params.profile,
       thinkingLevel: params.thinkingLevel,
+      sessionId,
+      persistSession: params.persistSession === true,
       outputSchema: params.outputSchema,
     });
 
@@ -520,6 +544,7 @@ export async function spawnClaudeSubagent(params: {
       status: "done",
       result,
       usage: latestUsage,
+      ...(sessionId ? { sessionId } : {}),
       ...(progress ? { progress } : {}),
     });
   } catch (error) {
@@ -543,6 +568,7 @@ export async function spawnClaudeSubagent(params: {
       status,
       error: message,
       usage: latestUsage,
+      ...(sessionId ? { sessionId } : {}),
       ...(progress ? { progress } : {}),
     });
   } finally {

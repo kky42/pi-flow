@@ -23,6 +23,14 @@ import { CHILD_EXCLUDED_TOOLS, spawnSubagent } from "./core/spawn.ts";
 import { createProgressNode, textResult, type AgentToolResult } from "./core/progress.ts";
 import { formatUsage, renderSubagentNode } from "./core/subagent-render.ts";
 import { SPINNER_INTERVAL_MS } from "./core/spinner.ts";
+import {
+  assertBindingMatchesProfile,
+  getPersistedSessionKeyBinding,
+  normalizeSessionKey,
+  persistSessionKeyBinding,
+  SessionKeyLocks,
+  type SessionKeyBinding,
+} from "./core/session-key.ts";
 import { createWorkflowTool } from "./workflow/tool.ts";
 import { listSavedWorkflows } from "./workflow/registry.ts";
 import type {
@@ -61,6 +69,11 @@ const agentToolParameters = Type.Object({
       description: "The subagent profile to use. Defaults to general-purpose. Custom profiles are loaded from ~/.pi/agent/subagents/<agent-name>.md.",
     }),
   ),
+  session_key: Type.Optional(
+    Type.String({
+      description: "Caller-chosen key for a resumable subagent conversation. Omit for a fresh one-shot subagent; reuse the same key to continue that child context.",
+    }),
+  ),
 });
 
 type AgentToolParams = Static<typeof agentToolParameters>;
@@ -71,6 +84,8 @@ interface DelegationState {
   subagentTimeoutMs: number;
   progressEnabled: boolean;
   activeRuns: Map<string, ActiveAgentRun>;
+  sessionBindings: Map<string, SessionKeyBinding>;
+  sessionKeyLocks: SessionKeyLocks;
   frame: number;
   heartbeat?: ReturnType<typeof setInterval>;
 }
@@ -135,6 +150,36 @@ function normalizeSubagentType(value: string | undefined): SubagentType {
     return "general-purpose";
   }
   return value.trim();
+}
+
+function getSessionKeyBinding(
+  state: DelegationState,
+  ctx: ExtensionContext,
+  sessionKey: string,
+): SessionKeyBinding | undefined {
+  const persisted = getPersistedSessionKeyBinding(ctx, sessionKey);
+  if (persisted) {
+    state.sessionBindings.set(sessionKey, persisted);
+    return persisted;
+  }
+  return state.sessionBindings.get(sessionKey);
+}
+
+function rememberSessionKeyBinding(
+  state: DelegationState,
+  ctx: ExtensionContext,
+  binding: SessionKeyBinding,
+): void {
+  const existing = getSessionKeyBinding(state, ctx, binding.key);
+  state.sessionBindings.set(binding.key, binding);
+  if (
+    existing?.sessionId === binding.sessionId &&
+    existing.subagentType === binding.subagentType &&
+    existing.backend === binding.backend
+  ) {
+    return;
+  }
+  persistSessionKeyBinding(ctx, binding);
 }
 
 function formatProfileNames(profiles: Map<string, SubagentProfile>): string {
@@ -288,7 +333,7 @@ function createAgentTool(
   return defineTool({
     name: "Agent",
     label: "Agent",
-    description: "Launch a fresh subagent. Available agents include built-ins and custom profiles from ~/.pi/agent/subagents/*.md. Prompts must be self-contained.",
+    description: "Launch a subagent. Omit session_key for a fresh one-shot context; pass a caller-chosen session_key to create or continue a resumable subagent conversation. Available agents include built-ins and custom profiles from ~/.pi/agent/subagents/*.md.",
     promptSnippet: AGENT_PROMPT_SNIPPET,
     promptGuidelines: AGENT_PROMPT_GUIDELINES,
     parameters: agentToolParameters,
@@ -301,6 +346,7 @@ function createAgentTool(
       };
       const profiles = filterProfilesForModelRegistry(getSubagentProfiles(getAgentDir()), ctx.modelRegistry);
       const subagentType = normalizeSubagentType(params.subagent_type);
+      const sessionKey = normalizeSessionKey(params.session_key);
       const profile = profiles.get(subagentType);
       if (!profile) {
         return textResult(
@@ -337,60 +383,100 @@ function createAgentTool(
       }
 
       let release: (() => void) | undefined;
-      try {
-        release = await state.limiter.acquire(signal);
-      } catch (error) {
-        const message = error instanceof Error ? error.message : String(error);
-        const status = signal?.aborted ? "aborted" : "error";
+      const acquireSlot = async (): Promise<AgentToolResult | undefined> => {
+        try {
+          release = await state.limiter.acquire(signal);
+        } catch (error) {
+          const message = error instanceof Error ? error.message : String(error);
+          const status = signal?.aborted ? "aborted" : "error";
+          if (run) {
+            run.progress.status = status;
+            run.progress.error = message;
+            run.progress.endedAt = Date.now();
+            emitActiveRunUpdate(state, run);
+          }
+          return textResult(`Subagent "${params.description}" (${subagentType}) ${status}: ${message}`, {
+            description: params.description,
+            subagentType,
+            backend: profile.backend,
+            status,
+            error: message,
+          });
+        }
+
         if (run) {
-          run.progress.status = status;
-          run.progress.error = message;
-          run.progress.endedAt = Date.now();
-          emitActiveRunUpdate(state, run);
-          state.activeRuns.delete(toolCallId);
+          run.progress.status = "running";
+          run.progress.startedAt = Date.now();
           broadcastActiveRunUpdates(state);
         }
-        return textResult(`Subagent "${params.description}" (${subagentType}) ${status}: ${message}`, {
-          description: params.description,
-          subagentType,
-          backend: profile.backend,
-          status,
-          error: message,
-          ...(run ? { progress: run.progress, activeCount: getRunningRunCount(state), frame: state.frame } : {}),
-        });
-      }
-
-      if (run) {
-        run.progress.status = "running";
-        run.progress.startedAt = Date.now();
-        broadcastActiveRunUpdates(state);
-      }
+        return undefined;
+      };
 
       try {
-        const result = await spawnSubagent({
-          toolCallId,
-          description: params.description,
-          prompt: params.prompt,
-          profile,
-          model,
-          thinkingLevel: profile.thinking ?? options.getThinkingLevel(),
-          ctx,
-          signal,
-          timeoutMs: options.getSubagentTimeoutMs(),
-          progressEnabled: effectiveState.progressEnabled,
-          onProgress: effectiveState.progressEnabled && run
-            ? (partial) => {
-                const details = partial.details as SubagentToolDetails;
-                if (details.progress) {
-                  run.progress = details.progress;
-                }
-                emitActiveRunUpdate(state, run);
-              }
-            : undefined,
-          onUsage: (usage) => options.updateStatus(ctx, toolCallId, usage),
-          excludeTools: CHILD_EXCLUDED_TOOLS,
-        });
-        const details = result.details as SubagentToolDetails;
+        let result: AgentToolResult;
+        try {
+          result = await state.sessionKeyLocks.run(sessionKey, async () => {
+            const binding = sessionKey ? getSessionKeyBinding(state, ctx, sessionKey) : undefined;
+            if (binding) {
+              assertBindingMatchesProfile(binding, { subagentType, backend: profile.backend });
+            }
+            const acquisitionFailure = await acquireSlot();
+            if (acquisitionFailure) {
+              return acquisitionFailure;
+            }
+            const spawned = await spawnSubagent({
+              toolCallId,
+              description: params.description,
+              prompt: params.prompt,
+              profile,
+              model,
+              thinkingLevel: profile.thinking ?? options.getThinkingLevel(),
+              ctx,
+              signal,
+              timeoutMs: options.getSubagentTimeoutMs(),
+              progressEnabled: effectiveState.progressEnabled,
+              onProgress: effectiveState.progressEnabled && run
+                ? (partial) => {
+                    const details = partial.details as SubagentToolDetails;
+                    if (details.progress) {
+                      run.progress = details.progress;
+                    }
+                    emitActiveRunUpdate(state, run);
+                  }
+                : undefined,
+              onUsage: (usage) => options.updateStatus(ctx, toolCallId, usage),
+              excludeTools: CHILD_EXCLUDED_TOOLS,
+              sessionId: binding?.sessionId,
+              persistSession: Boolean(sessionKey),
+            });
+            const spawnedDetails = spawned.details as SubagentToolDetails;
+            if (sessionKey && spawnedDetails.sessionId) {
+              rememberSessionKeyBinding(state, ctx, {
+                key: sessionKey,
+                sessionId: spawnedDetails.sessionId,
+                subagentType,
+                backend: profile.backend,
+              });
+            }
+            return spawned;
+          });
+        } catch (error) {
+          const message = error instanceof Error ? error.message : String(error);
+          if (run) {
+            run.progress.status = "error";
+            run.progress.error = message;
+            run.progress.endedAt = Date.now();
+          }
+          result = textResult(`Subagent "${params.description}" (${subagentType}) failed: ${message}`, {
+            description: params.description,
+            subagentType,
+            backend: profile.backend,
+            status: "error",
+            error: message,
+          });
+        }
+        const details = { ...(result.details as SubagentToolDetails) };
+        delete details.sessionId;
         if (run && details.progress) {
           run.progress = details.progress;
         }
@@ -399,9 +485,9 @@ function createAgentTool(
           details.activeCount = getRunningRunCount(state);
           details.frame = state.frame;
         }
-        return result;
+        return { ...result, details };
       } finally {
-        release();
+        release?.();
         if (run) {
           state.activeRuns.delete(toolCallId);
           broadcastActiveRunUpdates(state);
@@ -472,6 +558,8 @@ export function createSubagentExtension(options: SubagentExtensionOptions = {}):
       subagentTimeoutMs: defaultSubagentTimeoutMs,
       progressEnabled: false,
       activeRuns: new Map(),
+      sessionBindings: new Map(),
+      sessionKeyLocks: new SessionKeyLocks(),
       frame: 0,
     };
     const syncMaxConcurrentSubagents = () => {
@@ -522,6 +610,8 @@ export function createSubagentExtension(options: SubagentExtensionOptions = {}):
 
     pi.on("session_start", (_event, ctx) => {
       syncMaxConcurrentSubagents();
+      rootState.sessionBindings.clear();
+      rootState.sessionKeyLocks = new SessionKeyLocks();
       usageStatusState.calls.clear();
       usageStatusState.latestCacheHitRate = undefined;
       if (ctx.hasUI) {
@@ -534,10 +624,9 @@ export function createSubagentExtension(options: SubagentExtensionOptions = {}):
       if (!tools.some((tool) => tool.name === "Agent")) {
         return;
       }
-      // No per-turn counter reset: the shared ConcurrencyLimiter takes a slot
-      // synchronously in execute() before the first await and releases it in the
-      // finally. Acquisition is synchronous and release always runs, so the
-      // in-flight count stays accurate across turns without a reset.
+      // No per-turn counter reset: the shared ConcurrencyLimiter is acquired
+      // immediately before a child spawn and released in the matching finally,
+      // so the in-flight count stays accurate across turns without a reset.
       const profiles = filterProfilesForModelRegistry(getSubagentProfiles(getAgentDir()), ctx.modelRegistry);
       const sections = [event.systemPrompt, buildCoordinatorPrompt(profiles)];
       if (workflowEnabled && tools.some((tool) => tool.name === "workflow")) {

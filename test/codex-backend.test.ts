@@ -21,7 +21,7 @@ import { describe, expect, it, vi } from "vitest";
 import { createSubagentExtension } from "../src/pi-subagent.ts";
 import { getSubagentProfiles, loadBuiltinSubagentProfiles } from "../src/profiles.ts";
 import { buildClaudeArgs, claudeUsageToSubagentUsage, extractClaudeCostUsd, extractClaudeError, extractClaudeFinalText, extractClaudeUsage, spawnClaudeSubagent } from "../src/core/claude.ts";
-import { buildCodexArgs, codexUsageToSubagentUsage, estimateCodexCostUsd, extractCodexFinalText, spawnCodexSubagent } from "../src/core/codex.ts";
+import { buildCodexArgs, codexUsageToSubagentUsage, estimateCodexCostUsd, extractCodexFinalText, extractCodexSessionId, spawnCodexSubagent } from "../src/core/codex.ts";
 import { MAX_STDOUT_LINE_CHARS } from "../src/core/stream.ts";
 import { packageRoot, setupPiSubagentTestHarness } from "./helpers/pi-subagent-harness.ts";
 
@@ -69,6 +69,7 @@ describe("pi-subagent codex backend", () => {
       "--json",
       "--skip-git-repo-check",
       "--dangerously-bypass-approvals-and-sandbox",
+      "--ephemeral",
       "-c",
       "developer_instructions=\"You are a Codex reviewer.\"",
       "--model",
@@ -78,6 +79,26 @@ describe("pi-subagent codex backend", () => {
       "--output-schema",
       "/tmp/schema.json",
       "--",
+      "-",
+    ]);
+
+    expect(buildCodexArgs({
+      prompt: "Revise.",
+      thinkingLevel: undefined,
+      sessionId: "codex-session-1",
+      persistSession: true,
+      profile: {
+        name: "codex-reviewer",
+        description: "Codex reviewer",
+        backend: "codex",
+      },
+    })).toEqual([
+      "exec",
+      "resume",
+      "--json",
+      "--skip-git-repo-check",
+      "--dangerously-bypass-approvals-and-sandbox",
+      "codex-session-1",
       "-",
     ]);
 
@@ -93,7 +114,10 @@ describe("pi-subagent codex backend", () => {
     });
   });
 
-  it("extracts codex final text from text, message, and structured content", () => {
+  it("extracts codex session id and final text", () => {
+    expect(extractCodexSessionId({ type: "thread.started", thread_id: "codex-thread-123" })).toBe("codex-thread-123");
+    expect(extractCodexSessionId({ type: "thread.started", session_id: "codex-session-123" })).toBe("codex-session-123");
+    expect(extractCodexSessionId({ type: "item.completed" })).toBeUndefined();
     expect(extractCodexFinalText({
       type: "item.completed",
       item: { type: "agent_message", text: "text field" },
@@ -161,12 +185,79 @@ console.log(JSON.stringify({ type: 'turn.completed', usage: { input_tokens: 1000
     expect(codexArgs).toContain("--model");
     expect(codexArgs).toContain("gpt-5.4-mini");
     expect(codexArgs).toContain("developer_instructions=\"Codex reviewer prompt.\"");
+    expect(codexArgs).toContain("--ephemeral");
     expect(codexArgs.at(-1)).toBe("-");
     expect(codexRun.stdin).toBe("Review the latest diff.");
     const rootMessages = JSON.stringify(rootContinuationContext?.messages);
     expect(rootMessages).toContain("codex child done");
+    expect(rootMessages).not.toContain("session_id:");
 
     disposeSession(session);
+  });
+
+  it("returns codex thread ids and uses session_id with exec resume", async () => {
+    const binDir = join(tempDir, "bin-codex-resume");
+    const runsPath = join(tempDir, "codex-runs.jsonl");
+    mkdirSync(binDir, { recursive: true });
+    const fakeCodexPath = join(binDir, "codex");
+    writeFileSync(fakeCodexPath, `#!/usr/bin/env node
+import { appendFileSync } from 'node:fs';
+let stdin = '';
+for await (const chunk of process.stdin) stdin += chunk;
+const args = process.argv.slice(2);
+appendFileSync(${JSON.stringify(runsPath)}, JSON.stringify({ args, stdin }) + '\\n');
+const resumeIndex = args.indexOf('resume');
+const sessionId = resumeIndex === -1 ? 'codex-first-session' : args[args.length - 2];
+console.log(JSON.stringify({ type: 'thread.started', thread_id: sessionId }));
+console.log(JSON.stringify({ type: 'item.completed', item: { type: 'agent_message', text: stdin.includes('Second') ? 'second done' : 'first done' } }));
+console.log(JSON.stringify({ type: 'turn.completed', usage: { input_tokens: 10, cached_input_tokens: 0, output_tokens: 2 } }));
+`);
+    chmodSync(fakeCodexPath, 0o755);
+    process.env.PATH = `${binDir}:${originalPathEnv ?? ""}`;
+
+    const profile = {
+      name: "codex-resume",
+      description: "Codex resume profile.",
+      backend: "codex" as const,
+      model: "gpt-5.4-mini",
+      systemPrompt: "Codex resume prompt.",
+    };
+    const first = await spawnCodexSubagent({
+      toolCallId: "codex-resume-1",
+      description: "Codex first",
+      prompt: "First prompt.",
+      profile,
+      thinkingLevel: "medium",
+      ctx: { cwd } as ExtensionContext,
+      signal: undefined,
+      progressEnabled: false,
+      onProgress: undefined,
+      onUsage: () => undefined,
+      persistSession: true,
+    });
+    expect(first.details.sessionId).toBe("codex-first-session");
+
+    const second = await spawnCodexSubagent({
+      toolCallId: "codex-resume-2",
+      description: "Codex second",
+      prompt: "Second prompt.",
+      profile,
+      thinkingLevel: "medium",
+      ctx: { cwd } as ExtensionContext,
+      signal: undefined,
+      progressEnabled: false,
+      onProgress: undefined,
+      onUsage: () => undefined,
+      sessionId: String(first.details.sessionId),
+      persistSession: true,
+    });
+
+    expect(second.details.sessionId).toBe("codex-first-session");
+    const runs = readFileSync(runsPath, "utf8").trim().split("\n").map((line) => JSON.parse(line));
+    expect(runs[0].args).not.toContain("resume");
+    expect(runs[1].args).toContain("resume");
+    expect(runs[1].args).toContain("codex-first-session");
+    expect(runs[1].stdin).toBe("Second prompt.");
   });
 
   it("kills a codex child if abort lands after process spawn", async () => {

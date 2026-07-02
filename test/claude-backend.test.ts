@@ -20,7 +20,7 @@ import {
 import { describe, expect, it, vi } from "vitest";
 import { createSubagentExtension } from "../src/pi-subagent.ts";
 import { getSubagentProfiles, loadBuiltinSubagentProfiles } from "../src/profiles.ts";
-import { buildClaudeArgs, claudeUsageToSubagentUsage, extractClaudeCostUsd, extractClaudeError, extractClaudeFinalText, extractClaudeUsage, spawnClaudeSubagent } from "../src/core/claude.ts";
+import { buildClaudeArgs, claudeUsageToSubagentUsage, extractClaudeCostUsd, extractClaudeError, extractClaudeFinalText, extractClaudeSessionId, extractClaudeUsage, spawnClaudeSubagent } from "../src/core/claude.ts";
 import { buildCodexArgs, codexUsageToSubagentUsage, estimateCodexCostUsd, extractCodexFinalText, spawnCodexSubagent } from "../src/core/codex.ts";
 import { MAX_STDOUT_LINE_CHARS } from "../src/core/stream.ts";
 import { packageRoot, setupPiSubagentTestHarness } from "./helpers/pi-subagent-harness.ts";
@@ -69,8 +69,8 @@ describe("pi-subagent claude backend", () => {
       "--output-format",
       "stream-json",
       "--verbose",
-      "--no-session-persistence",
       "--dangerously-skip-permissions",
+      "--no-session-persistence",
       "--append-system-prompt",
       "You are a Claude reviewer.",
       "--model",
@@ -79,6 +79,24 @@ describe("pi-subagent claude backend", () => {
       "minimal",
       "--json-schema",
       JSON.stringify(schema),
+    ]);
+
+    expect(buildClaudeArgs({
+      thinkingLevel: undefined,
+      sessionId: "claude-session-1",
+      profile: {
+        name: "claude-reviewer",
+        description: "Claude reviewer",
+        backend: "claude",
+      },
+    })).toEqual([
+      "-p",
+      "--output-format",
+      "stream-json",
+      "--verbose",
+      "--dangerously-skip-permissions",
+      "--resume",
+      "claude-session-1",
     ]);
 
     expect(claudeUsageToSubagentUsage({
@@ -120,7 +138,9 @@ describe("pi-subagent claude backend", () => {
     expect(extractClaudeCostUsd({ type: "result", modelUsage: resultEvent.modelUsage })).toBeCloseTo(0.3);
   });
 
-  it("extracts claude final text from result, structured output, and assistant text", () => {
+  it("extracts claude session id and final text", () => {
+    expect(extractClaudeSessionId({ type: "system", subtype: "init", session_id: "claude-session-123" })).toBe("claude-session-123");
+    expect(extractClaudeSessionId({ type: "system", subtype: "init" })).toBeUndefined();
     expect(extractClaudeError({
       type: "result",
       subtype: "success",
@@ -206,8 +226,74 @@ console.log(JSON.stringify({ type: 'result', subtype: 'success', is_error: false
     expect(claudeRun.stdin).toBe("Review the latest diff.");
     const rootMessages = JSON.stringify(rootContinuationContext?.messages);
     expect(rootMessages).toContain("claude child done");
+    expect(rootMessages).not.toContain("session_id:");
 
     disposeSession(session);
+  });
+
+  it("returns claude session ids and uses session_id with --resume", async () => {
+    const binDir = join(tempDir, "bin-claude-resume");
+    const runsPath = join(tempDir, "claude-runs.jsonl");
+    mkdirSync(binDir, { recursive: true });
+    const fakeClaudePath = join(binDir, "claude");
+    writeFileSync(fakeClaudePath, `#!/usr/bin/env node
+import { appendFileSync } from 'node:fs';
+let stdin = '';
+for await (const chunk of process.stdin) stdin += chunk;
+const args = process.argv.slice(2);
+appendFileSync(${JSON.stringify(runsPath)}, JSON.stringify({ args, stdin }) + '\\n');
+const resumeIndex = args.indexOf('--resume');
+const sessionId = resumeIndex === -1 ? 'claude-first-session' : args[resumeIndex + 1];
+console.log(JSON.stringify({ type: 'system', subtype: 'init', session_id: sessionId }));
+console.log(JSON.stringify({ type: 'result', subtype: 'success', is_error: false, result: stdin.includes('Second') ? 'second done' : 'first done', usage: { input_tokens: 10, output_tokens: 2 } }));
+`);
+    chmodSync(fakeClaudePath, 0o755);
+    process.env.PATH = `${binDir}:${originalPathEnv ?? ""}`;
+
+    const profile = {
+      name: "claude-resume",
+      description: "Claude resume profile.",
+      backend: "claude" as const,
+      model: "sonnet",
+      systemPrompt: "Claude resume prompt.",
+    };
+    const first = await spawnClaudeSubagent({
+      toolCallId: "claude-resume-1",
+      description: "Claude first",
+      prompt: "First prompt.",
+      profile,
+      thinkingLevel: "medium",
+      ctx: { cwd } as ExtensionContext,
+      signal: undefined,
+      progressEnabled: false,
+      onProgress: undefined,
+      onUsage: () => undefined,
+      persistSession: true,
+    });
+    expect(first.details.sessionId).toBe("claude-first-session");
+
+    const second = await spawnClaudeSubagent({
+      toolCallId: "claude-resume-2",
+      description: "Claude second",
+      prompt: "Second prompt.",
+      profile,
+      thinkingLevel: "medium",
+      ctx: { cwd } as ExtensionContext,
+      signal: undefined,
+      progressEnabled: false,
+      onProgress: undefined,
+      onUsage: () => undefined,
+      sessionId: String(first.details.sessionId),
+      persistSession: true,
+    });
+
+    expect(second.details.sessionId).toBe("claude-first-session");
+    const runs = readFileSync(runsPath, "utf8").trim().split("\n").map((line) => JSON.parse(line));
+    expect(runs[0].args).not.toContain("--resume");
+    expect(runs[0].args).not.toContain("--no-session-persistence");
+    expect(runs[1].args).toContain("--resume");
+    expect(runs[1].args).toContain("claude-first-session");
+    expect(runs[1].stdin).toBe("Second prompt.");
   });
 
   it("kills a claude child if abort lands after process spawn", async () => {

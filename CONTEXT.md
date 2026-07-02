@@ -37,8 +37,8 @@ Multiple foreground subagents launched by one caller turn and awaited before the
 _Avoid_: Background execution
 
 **Fresh Subagent Context**:
-A subagent conversation that starts with no parent messages, tool results, or reasoning, while still loading the normal project environment for the same working directory. The caller must include any needed conversation-specific context in the delegated prompt.
-_Avoid_: Inherited context, forked context
+A one-shot subagent conversation that starts with no parent messages, tool results, or reasoning when `session_key` is omitted, while still loading the normal project environment for the same working directory. The caller must include any needed conversation-specific context in a fresh delegated prompt. Passing the same caller-chosen `session_key` explicitly creates/continues that child backend conversation instead; pi-flow maps the key to the backend-native session id internally.
+_Avoid_: Implicit inherited context, hidden forked context
 
 **Explorer**:
 The built-in file-search profile. It is selected as `explorer` and has no aliases.
@@ -47,7 +47,7 @@ _Avoid_: Explore
 ## Example Dialogue
 
 Developer: "Should this subagent keep the parent conversation?"
-Domain expert: "No. A subagent starts fresh, so the caller must brief it with the task, relevant context, and expected output."
+Domain expert: "No. A fresh subagent starts without parent context, so the caller must brief it with the task, relevant context, and expected output. Reuse `session_key` only to continue a previous child conversation."
 
 Developer: "Can a pi-backed subagent call another subagent?"
 Domain expert: "No. The main agent coordinates delegation. Pi-backed child sessions do not receive `Agent` or `workflow`. External CLI backends use their own tool surface."

@@ -7,7 +7,7 @@ Multi-backend subagents and dynamic workflow orchestration for [pi](https://gith
 
 `pi-flow` gives pi two coordination primitives:
 
-- **`Agent`** — launch one fresh subagent for a scoped task.
+- **`Agent`** — launch one subagent for a scoped task; optionally create/continue it with a caller-chosen `session_key`.
 - **`workflow`** — run a small trusted JavaScript workflow that fans work out through many subagents, optionally across different agent harnesses.
 
 Supported subagent backends:
@@ -51,7 +51,7 @@ A single agent harness is good at many tasks, but hard problems often benefit fr
 
 Use it when you want to:
 
-1. **Add subagents and dynamic workflows to pi.** Delegate repository exploration, broad search, review, and synthesis to fresh isolated child agents.
+1. **Add subagents and dynamic workflows to pi.** Delegate repository exploration, broad search, review, and synthesis to fresh isolated child agents, or explicitly continue a child with `session_key`.
 2. **Mix Pi, Codex, and Claude Code backends.** Different harnesses and models have different tool behavior, prompts, strengths, and blind spots. Combining them can improve adversarial review, idea generation, and complex problem solving.
 3. **Scale wide fan-out without losing inspectability.** Large audits and research tasks can be split into many bounded subagent lanes. The extension queues lanes under a shared concurrency cap and surfaces progress in the TUI.
 4. **Use each subscription/model where it shines.** Example routing:
@@ -133,11 +133,27 @@ Agent({
 });
 ```
 
-Subagents start fresh in the same working directory. Parent messages and tool results are not inherited, so prompts should be self-contained.
+Subagents start fresh in the same working directory when `session_key` is omitted. Parent messages and tool results are not inherited, so fresh prompts should be self-contained. If a child needs follow-up, choose a stable `session_key`; pi-flow maps it to the backend-native session internally and persists direct-Agent mappings in the parent session.
+
+```ts
+Agent({
+  description: "Draft solution",
+  subagent_type: "general-purpose",
+  session_key: "worker",
+  prompt: "Create the first draft.",
+});
+
+Agent({
+  description: "Revise draft",
+  subagent_type: "general-purpose",
+  session_key: "worker",
+  prompt: "Reviewer feedback: tighten the argument and update the draft.",
+});
+```
 
 ## Use workflows
 
-Use `workflow` when a task should fan out to several subagents, use different backends, or synthesize multiple independent findings.
+Use `workflow` when a task should fan out to several subagents, use different backends, or synthesize multiple independent findings. Workflow `agent(prompt, opts)` uses the same spawn core as `Agent`, including `subagent_type` and optional `session_key` continuation for worker/reviewer loops.
 
 You normally do **not** write workflow files by hand. Ask pi in natural language and the main agent can create the workflow, run it, and summarize the result:
 
@@ -162,3 +178,17 @@ pi --max-concurrent-subagents 4 --subagent-timeout-ms 600000
 ```
 
 Set `--subagent-timeout-ms` to `0` to disable the timeout. Values are milliseconds.
+
+## Validation
+
+Fast local checks:
+
+```bash
+npm run check
+```
+
+Real-model E2E checks are intentionally manual because they use live Pi/Codex/Claude backends. When changing session continuation, run:
+
+```bash
+npm run e2e:session-key-resume -- --backend all --timeout-ms 300000
+```

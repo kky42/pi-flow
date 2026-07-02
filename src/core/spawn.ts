@@ -1,3 +1,4 @@
+import { join } from "node:path";
 import {
   createAgentSession,
   DefaultResourceLoader,
@@ -28,6 +29,43 @@ import { createTimeoutSignal, markSubagentTimedOut } from "./timeout.ts";
  */
 export const CHILD_EXCLUDED_TOOLS: readonly string[] = ["Agent", "workflow"];
 
+const PI_SUBAGENT_SESSION_DIR_NAME = "subagent-sessions";
+
+interface PiSubagentSessionResolution {
+  sessionManager: SessionManager;
+  sessionId: string | undefined;
+}
+
+async function resolvePiSubagentSession({
+  cwd,
+  agentDir,
+  requestedSessionId,
+}: {
+  cwd: string;
+  agentDir: string;
+  requestedSessionId: string | undefined;
+}): Promise<PiSubagentSessionResolution> {
+  const sessionDir = join(agentDir, PI_SUBAGENT_SESSION_DIR_NAME);
+  const normalizedSessionId = requestedSessionId?.trim();
+  if (normalizedSessionId) {
+    const sessions = await SessionManager.list(cwd, sessionDir);
+    const existing = sessions.find((session) => session.id === normalizedSessionId);
+    const sessionManager = existing
+      ? SessionManager.open(existing.path, sessionDir, cwd)
+      : SessionManager.create(cwd, sessionDir, { id: normalizedSessionId });
+    return {
+      sessionManager,
+      sessionId: sessionManager.getSessionId(),
+    };
+  }
+
+  const sessionManager = SessionManager.create(cwd, sessionDir);
+  return {
+    sessionManager,
+    sessionId: sessionManager.getSessionId(),
+  };
+}
+
 /**
  * Parameters for a single subagent run. This is the shared spawn primitive used
  * by both the `Agent` tool and the `workflow` tool's `agent()` global.
@@ -54,6 +92,10 @@ export interface SpawnSubagentParams {
   appendInstructions?: string;
   /** Extra tools to register in the child session (e.g. a structured_output tool). */
   customTools?: ToolDefinition[];
+  /** Backend session/thread id resolved from a caller-facing session_key. */
+  sessionId?: string;
+  /** Persist the child session so a session_key can continue it later. */
+  persistSession?: boolean;
   /** JSON schema for CLI backends that can validate final text output natively. */
   outputSchema?: unknown;
 }
@@ -104,6 +146,8 @@ async function spawnSubagentRuntime(params: SpawnSubagentParams): Promise<AgentT
       onProgress: params.onProgress,
       onUsage: params.onUsage,
       appendInstructions: params.appendInstructions,
+      sessionId: params.sessionId,
+      persistSession: params.persistSession === true,
       outputSchema: params.outputSchema,
     });
   }
@@ -120,6 +164,8 @@ async function spawnSubagentRuntime(params: SpawnSubagentParams): Promise<AgentT
       onProgress: params.onProgress,
       onUsage: params.onUsage,
       appendInstructions: params.appendInstructions,
+      sessionId: params.sessionId,
+      persistSession: params.persistSession === true,
       outputSchema: params.outputSchema,
     });
   }
@@ -164,6 +210,25 @@ async function spawnSubagentRuntime(params: SpawnSubagentParams): Promise<AgentT
 
   const agentDir = getAgentDir();
   const cwd = ctx.cwd;
+  let childSession: PiSubagentSessionResolution;
+  try {
+    childSession = params.persistSession === true
+      ? await resolvePiSubagentSession({
+          cwd,
+          agentDir,
+          requestedSessionId: params.sessionId,
+        })
+      : { sessionManager: SessionManager.inMemory(cwd), sessionId: undefined };
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    return textResult(`Subagent "${description}" (${subagentType}) failed: ${message}`, {
+      description,
+      subagentType,
+      backend: profile.backend,
+      status: "error",
+      error: message,
+    });
+  }
   const settingsManager = SettingsManager.create(cwd, agentDir);
   const appendPrompts = [
     profile.systemPrompt,
@@ -189,7 +254,7 @@ async function spawnSubagentRuntime(params: SpawnSubagentParams): Promise<AgentT
     thinkingLevel: thinkingLevel as NonNullable<Parameters<typeof createAgentSession>[0]>["thinkingLevel"],
     modelRegistry: ctx.modelRegistry,
     settingsManager,
-    sessionManager: SessionManager.inMemory(cwd),
+    sessionManager: childSession.sessionManager,
     resourceLoader,
     excludeTools: [...excludeTools],
     ...(customTools.length > 0 ? { customTools } : {}),
@@ -263,6 +328,7 @@ async function spawnSubagentRuntime(params: SpawnSubagentParams): Promise<AgentT
       status: "done",
       result,
       usage,
+      ...(childSession.sessionId ? { sessionId: childSession.sessionId } : {}),
       ...(progress ? { progress } : {}),
     });
   } catch (error) {
@@ -284,6 +350,7 @@ async function spawnSubagentRuntime(params: SpawnSubagentParams): Promise<AgentT
       status,
       error: message,
       usage,
+      ...(childSession.sessionId ? { sessionId: childSession.sessionId } : {}),
       ...(progress ? { progress } : {}),
     });
   } finally {

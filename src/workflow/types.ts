@@ -19,6 +19,11 @@ export interface WorkflowAgentCall {
   label: string;
   phase?: string;
   subagentType: string;
+  backend?: string;
+  /** Caller-chosen key for a resumable child conversation. */
+  sessionKey?: string;
+  /** Backend-native session/thread id captured for workflow replay bookkeeping. */
+  sessionId?: string;
   /** JSON Schema for structured output from the child subagent. */
   schema?: unknown;
 }
@@ -28,6 +33,10 @@ export interface WorkflowCachedAgentResult {
   fingerprint: string;
   result: unknown;
   failed?: boolean;
+  sessionKey?: string;
+  sessionId?: string;
+  subagentType?: string;
+  backend?: string;
 }
 
 export interface WorkflowAgentResultEvent extends WorkflowCachedAgentResult {
@@ -81,14 +90,16 @@ export interface RunWorkflowOptions {
   signal?: AbortSignal;
   /** Shared global concurrency cap; agent() queues on this. */
   limiter: ConcurrencyLimiter;
+  /** Optional per-call serializer, used to keep equal session_key calls from consuming global slots while waiting. */
+  serializeAgent?: <T>(sessionKey: string | undefined, task: () => Promise<T>) => Promise<T>;
   runAgent: WorkflowAgentRunner;
   defaultSubagentType?: string;
   limits?: Partial<WorkflowLimits>;
   onLog?: (message: string) => void;
   onPhase?: (title: string) => void;
   resumeAgentResults?: WorkflowCachedAgentResult[];
-  onAgentQueued?: (event: { index: number; label: string; phase?: string; subagentType: string; prompt: string }) => void;
-  onAgentStart?: (event: { index: number; label: string; phase?: string; subagentType: string; prompt: string; cached?: boolean }) => void;
+  onAgentQueued?: (event: { index: number; label: string; phase?: string; subagentType: string; sessionKey?: string; prompt: string }) => void;
+  onAgentStart?: (event: { index: number; label: string; phase?: string; subagentType: string; sessionKey?: string; prompt: string; cached?: boolean }) => void;
   onAgentEnd?: (event: { index: number; label: string; phase?: string; result: unknown; cached?: boolean; failed?: boolean }) => void;
   onAgentResult?: (event: WorkflowAgentResultEvent) => void | Promise<void>;
 }

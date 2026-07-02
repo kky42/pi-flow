@@ -11,6 +11,11 @@ import { Container, Text } from "@earendil-works/pi-tui";
 import type { ConcurrencyLimiter } from "../core/concurrency.ts";
 import { isActiveSubagentStatus, isCompletedSubagentStatus, renderSubagentNode } from "../core/subagent-render.ts";
 import { SPINNER_INTERVAL_MS } from "../core/spinner.ts";
+import {
+  assertBindingMatchesProfile,
+  SessionKeyLocks,
+  type SessionKeyBinding,
+} from "../core/session-key.ts";
 import { filterProfilesForModelRegistry, resolveProfileModel, usesPiBackend } from "../core/model.ts";
 import { CHILD_EXCLUDED_TOOLS, spawnSubagent } from "../core/spawn.ts";
 import { getSubagentProfiles } from "../profiles.ts";
@@ -133,6 +138,8 @@ export function createWorkflowTool(
       const emit = () => onUpdate?.(workflowResult(`Workflow "${metaName}" running.`, cloneSnapshot(snapshot)));
 
       let agentSeq = 0;
+      const sessionBindings = new Map<string, SessionKeyBinding>();
+      const sessionKeyLocks = new SessionKeyLocks();
       const runAgent: WorkflowAgentRunner = async (call, agentSignal) => {
         const profile = profiles.get(call.subagentType);
         if (!profile) {
@@ -168,6 +175,12 @@ export function createWorkflowTool(
 
         const childIndex = call.index ?? ++agentSeq;
         const childId = `${toolCallId}:agent:${childIndex}`;
+        const binding = call.sessionKey ? sessionBindings.get(call.sessionKey) : undefined;
+        if (binding) {
+          assertBindingMatchesProfile(binding, { subagentType: call.subagentType, backend: profile.backend });
+        }
+        call.backend = profile.backend;
+        call.sessionId = binding?.sessionId;
         const result = await spawnSubagent({
           toolCallId: childId,
           description: call.label,
@@ -198,8 +211,20 @@ export function createWorkflowTool(
           excludeTools: CHILD_EXCLUDED_TOOLS,
           appendInstructions,
           customTools,
+          sessionId: binding?.sessionId,
+          persistSession: Boolean(call.sessionKey),
           outputSchema: externalOutputSchema ? call.schema : undefined,
         });
+        const spawnedDetails = result.details as SubagentToolDetails;
+        if (call.sessionKey && spawnedDetails.sessionId) {
+          call.sessionId = spawnedDetails.sessionId;
+          sessionBindings.set(call.sessionKey, {
+            key: call.sessionKey,
+            sessionId: spawnedDetails.sessionId,
+            subagentType: call.subagentType,
+            backend: profile.backend,
+          });
+        }
         const resultDetails = result.details as SubagentToolDetails;
         const agent = snapshot.agents.find((item) => item.index === childIndex);
         if (agent) {
@@ -208,6 +233,7 @@ export function createWorkflowTool(
           agent.result = resultDetails.result;
           agent.error = resultDetails.error;
           agent.usage = resultDetails.usage;
+          agent.sessionKey = call.sessionKey;
           if (progress) {
             agent.startedAt = progress.startedAt;
             agent.endedAt = progress.endedAt;
@@ -255,6 +281,7 @@ export function createWorkflowTool(
           cwd: ctx.cwd,
           signal,
           limiter: options.getLimiter(),
+          serializeAgent: (sessionKey, task) => sessionKeyLocks.run(sessionKey, task),
           runAgent,
           resumeAgentResults,
           onLog: (message) => {
@@ -275,6 +302,7 @@ export function createWorkflowTool(
               phase: event.phase,
               subagentType: event.subagentType,
               backend: profiles.get(event.subagentType)?.backend,
+              sessionKey: event.sessionKey,
               status: "queued",
               startedAt: Date.now(),
               activity: [],
@@ -292,12 +320,14 @@ export function createWorkflowTool(
                 phase: event.phase,
                 subagentType: event.subagentType,
                 backend: profiles.get(event.subagentType)?.backend,
+                sessionKey: event.sessionKey,
                 status: event.cached ? "done" : "running",
                 activity: [],
                 activityCount: 0,
               };
               snapshot.agents.push(agent);
             }
+            agent.sessionKey = event.sessionKey ?? agent.sessionKey;
             agent.status = event.cached ? "done" : "running";
             agent.startedAt = Date.now();
             snapshot.agentCount = snapshot.agents.length;
@@ -319,6 +349,19 @@ export function createWorkflowTool(
             emit();
           },
           onAgentResult: async (event) => {
+            if (
+              event.sessionKey &&
+              event.sessionId &&
+              event.subagentType &&
+              (event.backend === "pi" || event.backend === "codex" || event.backend === "claude")
+            ) {
+              sessionBindings.set(event.sessionKey, {
+                key: event.sessionKey,
+                sessionId: event.sessionId,
+                subagentType: event.subagentType,
+                backend: event.backend,
+              });
+            }
             await journalWriter?.appendAgentResult(event);
           },
         });

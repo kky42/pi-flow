@@ -156,28 +156,52 @@ export async function runWorkflow<T = unknown>(
 
     const index = ++state.agentCount;
     const label = opts.label || defaultAgentLabel(assignedPhase, index);
-    const call = { index, prompt: taskPrompt, label, phase: assignedPhase, subagentType, schema: opts.schema };
+    const call = {
+      index,
+      prompt: taskPrompt,
+      label,
+      phase: assignedPhase,
+      subagentType,
+      backend: undefined as string | undefined,
+      sessionKey: opts.sessionKey,
+      sessionId: undefined as string | undefined,
+      schema: opts.schema,
+    };
     const fingerprint = fingerprintWorkflowAgentCall(call);
     const cachedResult = state.resumePrefixActive ? resumeAgentResults[index - 1] : undefined;
     if (cachedResult?.index === index && cachedResult.fingerprint === fingerprint && !cachedResult.failed) {
-      options.onAgentStart?.({ index, label, phase: assignedPhase, subagentType, prompt: taskPrompt, cached: true });
+      call.sessionId = cachedResult.sessionId;
+      call.backend = cachedResult.backend;
+      options.onAgentStart?.({ index, label, phase: assignedPhase, subagentType, sessionKey: opts.sessionKey, prompt: taskPrompt, cached: true });
       options.onAgentEnd?.({ index, label, phase: assignedPhase, result: cachedResult.result, cached: true, failed: false });
       await recordAgentResult({ ...call, index, fingerprint, result: cachedResult.result, failed: false, cached: true });
       return cachedResult.result;
     }
     state.resumePrefixActive = false;
 
-    // Queue on the shared global cap. May reject if aborted while waiting.
-    options.onAgentQueued?.({ index, label, phase: assignedPhase, subagentType, prompt: taskPrompt });
-    const release = await limiter.acquire(compositeSignal);
+    // Queue on session_key serialization first, then on the shared global cap.
+    // Same-key followers stay queued and do not occupy a global subagent slot
+    // while waiting for the earlier turn in that child conversation to finish.
+    options.onAgentQueued?.({ index, label, phase: assignedPhase, subagentType, sessionKey: opts.sessionKey, prompt: taskPrompt });
+    const runLiveAgent = async () => {
+      const release = await limiter.acquire(compositeSignal);
+      try {
+        options.onAgentStart?.({ index, label, phase: assignedPhase, subagentType, sessionKey: opts.sessionKey, prompt: taskPrompt });
+        throwIfAborted();
+        const liveResult = await options.runAgent(call, compositeSignal);
+        throwIfAborted();
+        return normalizeJsonSerializable(liveResult, "agent result");
+      } finally {
+        release();
+      }
+    };
+
     let result: unknown;
     let failed = false;
     try {
-      options.onAgentStart?.({ index, label, phase: assignedPhase, subagentType, prompt: taskPrompt });
-      throwIfAborted();
-      result = await options.runAgent(call, compositeSignal);
-      throwIfAborted();
-      result = normalizeJsonSerializable(result, "agent result");
+      result = options.serializeAgent
+        ? await options.serializeAgent(opts.sessionKey, runLiveAgent)
+        : await runLiveAgent();
     } catch (error) {
       if (options.signal?.aborted || runtimeAbortController.signal.aborted || isWorkflowFatalError(error)) {
         throw error;
@@ -185,8 +209,6 @@ export async function runWorkflow<T = unknown>(
       log(`agent ${label} failed: ${error instanceof Error ? error.message : String(error)}`);
       result = null;
       failed = true;
-    } finally {
-      release();
     }
     options.onAgentEnd?.({ index, label, phase: assignedPhase, result, failed, cached: false });
     await recordAgentResult({ ...call, index, fingerprint, result, failed, cached: false });

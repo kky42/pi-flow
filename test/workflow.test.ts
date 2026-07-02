@@ -4,6 +4,7 @@ import { join } from "node:path";
 import { Theme } from "@earendil-works/pi-coding-agent";
 import { describe, expect, it } from "vitest";
 import { ConcurrencyLimiter } from "../src/core/concurrency.ts";
+import { SessionKeyLocks } from "../src/core/session-key.ts";
 import { createSubagentExtension } from "../src/pi-subagent.ts";
 import type { WorkflowToolDetails } from "../src/types.ts";
 import {
@@ -20,6 +21,16 @@ const META = "export const meta = { name: 'wf', description: 'a workflow' };\n";
 
 function delay(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+async function waitUntil(predicate: () => boolean, timeoutMs = 250): Promise<void> {
+  const start = Date.now();
+  while (!predicate()) {
+    if (Date.now() - start > timeoutMs) {
+      throw new Error("condition was not met before timeout");
+    }
+    await delay(1);
+  }
 }
 
 function makeMockTheme(): Theme {
@@ -178,6 +189,50 @@ describe("runWorkflow", () => {
       { cwd: "/tmp", limiter: new ConcurrencyLimiter(4), runAgent },
     );
     expect(seen).toEqual(["general-purpose", "explorer"]);
+  });
+
+  it("passes normalized workflow agent session_key through to the shared subagent runner", async () => {
+    const seen: Array<string | undefined> = [];
+    const runAgent: WorkflowAgentRunner = async (call) => {
+      seen.push(call.sessionKey);
+      return call.label;
+    };
+    await runWorkflow(
+      `${META}await agent('a', { label: 'worker-1', session_key: ' worker ' });\nawait agent('b', { label: 'worker-2', session_key: '   ' });\nreturn null;`,
+      { cwd: "/tmp", limiter: new ConcurrencyLimiter(4), runAgent },
+    );
+    expect(seen).toEqual(["worker", undefined]);
+  });
+
+  it("serializes workflow session_key calls before acquiring global limiter slots", async () => {
+    const locks = new SessionKeyLocks();
+    const events: string[] = [];
+    let releaseA: (() => void) | undefined;
+    const runAgent: WorkflowAgentRunner = async (call) => {
+      events.push(`start:${call.label}`);
+      if (call.label === "a") {
+        await new Promise<void>((resolve) => {
+          releaseA = resolve;
+        });
+      }
+      events.push(`end:${call.label}`);
+      return call.label;
+    };
+
+    const run = runWorkflow(
+      `${META}return await parallel([\n  () => agent('a', { label: 'a', session_key: 'shared' }),\n  () => agent('b', { label: 'b', session_key: 'shared' }),\n  () => agent('c', { label: 'c', session_key: 'other' }),\n]);`,
+      {
+        cwd: "/tmp",
+        limiter: new ConcurrencyLimiter(2),
+        serializeAgent: (sessionKey, task) => locks.run(sessionKey, task),
+        runAgent,
+      },
+    );
+
+    await waitUntil(() => events.includes("start:c"));
+    expect(events).not.toContain("end:a");
+    releaseA?.();
+    await expect(run).resolves.toMatchObject({ result: ["a", "b", "c"] });
   });
 
   it("exposes args to the script", async () => {
