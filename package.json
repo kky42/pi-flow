@@ -1,13 +1,21 @@
 {
   "name": "@kky42/pi-flow",
-  "version": "1.1.0",
+  "version": "1.2.0",
   "description": "Multi-backend subagents and dynamic workflow orchestration for pi.",
   "type": "module",
   "main": "./index.ts",
-  "exports": "./index.ts",
+  "exports": {
+    ".": "./index.ts",
+    "./runtime": {
+      "types": "./dist/runtime.d.ts",
+      "default": "./dist/runtime.js"
+    },
+    "./package.json": "./package.json"
+  },
   "files": [
     "index.ts",
     "src",
+    "dist",
     "scripts",
     "README.md",
     "LICENSE",
@@ -25,14 +33,18 @@
   "license": "MIT",
   "scripts": {
     "build": "tsc",
+    "build:dist": "tsc -p tsconfig.dist.json && node scripts/rewrite-dts-extensions.mjs",
     "check": "tsc --noEmit && vitest run",
+    "prepublishOnly": "npm run check && npm run build:dist",
+    "smoke:runtime": "npm run build:dist && node scripts/smoke-runtime.mjs",
     "e2e": "node scripts/e2e/main-agent-comparison.mjs",
     "e2e:compare-claude": "node scripts/e2e/main-agent-comparison.mjs --with-claude",
     "e2e:workflow-features": "node scripts/e2e/workflow-features.mjs",
     "e2e:codex-subagent": "node scripts/e2e/codex-subagent.mjs",
     "e2e:claude-subagent": "node scripts/e2e/claude-subagent.mjs",
     "e2e:session-key-resume": "node scripts/e2e/session-key-resume.mjs",
-    "test": "vitest run"
+    "test": "vitest run",
+    "prepack": "npm run build:dist"
   },
   "peerDependencies": {
     "@earendil-works/pi-agent-core": "*",

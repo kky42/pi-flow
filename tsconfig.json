@@ -10,5 +10,5 @@
     "skipLibCheck": true,
     "rootDir": "."
   },
-  "include": ["index.ts", "src/**/*.ts", "test/**/*.ts"]
+  "include": ["index.ts", "runtime.ts", "src/**/*.ts", "test/**/*.ts"]
 }
