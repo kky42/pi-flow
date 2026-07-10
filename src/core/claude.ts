@@ -190,13 +190,15 @@ export function claudeUsageToSubagentUsage(usage: ClaudeTokenUsage, costUsd: num
   const cacheWrite = Math.max(0, usage.cacheCreationInputTokens);
   const output = Math.max(0, usage.outputTokens);
   const promptTokens = input + cacheRead + cacheWrite;
+  const hasBillableTokens = promptTokens + output > 0;
+  const costKnown = costUsd !== undefined && (!hasBillableTokens || costUsd > 0);
   return {
     input,
     output,
     cacheRead,
     cacheWrite,
-    cost: costUsd ?? 0,
-    costKnown: costUsd !== undefined,
+    cost: costKnown ? costUsd ?? 0 : 0,
+    costKnown,
     costEstimated: false,
     latestCacheHitRate: promptTokens > 0 ? (cacheRead / promptTokens) * 100 : undefined,
   };

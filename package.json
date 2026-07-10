@@ -1,6 +1,6 @@
 {
   "name": "@kky42/pi-flow",
-  "version": "2.0.0",
+  "version": "2.0.1",
   "description": "Multi-backend subagents and dynamic workflow orchestration for pi.",
   "type": "module",
   "main": "./index.ts",
@@ -38,11 +38,8 @@
     "check": "tsc --noEmit && vitest run",
     "prepublishOnly": "npm run check && npm run build:dist",
     "smoke:runtime": "npm run build:dist && node scripts/smoke-runtime.mjs",
-    "e2e": "node scripts/e2e/main-agent-comparison.mjs",
-    "e2e:compare-claude": "node scripts/e2e/main-agent-comparison.mjs --with-claude",
+    "e2e": "node scripts/e2e/basic-metrics.mjs",
     "e2e:workflow-features": "node scripts/e2e/workflow-features.mjs",
-    "e2e:codex-subagent": "node scripts/e2e/codex-subagent.mjs",
-    "e2e:claude-subagent": "node scripts/e2e/claude-subagent.mjs",
     "e2e:session-key-resume": "node scripts/e2e/session-key-resume.mjs",
     "test": "vitest run",
     "prepack": "npm run build:dist"

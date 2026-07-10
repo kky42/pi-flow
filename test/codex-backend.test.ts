@@ -21,7 +21,7 @@ import { describe, expect, it, vi } from "vitest";
 import { createSubagentExtension } from "../src/pi-subagent.ts";
 import { getSubagentProfiles, loadBuiltinSubagentProfiles } from "../src/profiles.ts";
 import { buildClaudeArgs, claudeUsageToSubagentUsage, extractClaudeCostUsd, extractClaudeError, extractClaudeFinalText, extractClaudeUsage, spawnClaudeSubagent } from "../src/core/claude.ts";
-import { buildCodexArgs, codexUsageToSubagentUsage, estimateCodexCostUsd, extractCodexFinalText, extractCodexSessionId, spawnCodexSubagent } from "../src/core/codex.ts";
+import { buildCodexArgs, codexUsageToSubagentUsage, estimateCodexCostUsd, extractCodexFinalText, extractCodexSessionId, extractCodexUsage, spawnCodexSubagent } from "../src/core/codex.ts";
 import { MAX_STDOUT_LINE_CHARS } from "../src/core/stream.ts";
 import { packageRoot, setupPiSubagentTestHarness } from "./helpers/pi-subagent-harness.ts";
 
@@ -104,6 +104,13 @@ describe("pi-subagent codex backend", () => {
 
     const usage = { inputTokens: 1000, cachedInputTokens: 200, outputTokens: 50, reasoningOutputTokens: 0 };
     expect(estimateCodexCostUsd("openai/gpt-5.4-mini", usage)).toBeCloseTo(0.000305);
+    expect(estimateCodexCostUsd("gpt-5.6-sol", usage)).toBeCloseTo(0.0056);
+    expect(estimateCodexCostUsd("openai-codex/gpt-5.6-terra", usage)).toBeCloseTo(0.0028);
+    expect(estimateCodexCostUsd("gpt-5.6-luna", usage)).toBeCloseTo(0.00112);
+    expect(estimateCodexCostUsd("gpt-5.6-sol", {
+      ...usage,
+      inputTokens: 272_001,
+    })).toBeUndefined();
     expect(estimateCodexCostUsd("unknown-model", usage)).toBeUndefined();
     expect(codexUsageToSubagentUsage("unknown-model", usage)).toMatchObject({
       input: 800,
@@ -111,6 +118,34 @@ describe("pi-subagent codex backend", () => {
       output: 50,
       cost: 0,
       costKnown: false,
+    });
+  });
+
+  it("prefers cumulative usage from codex token-count snapshots", () => {
+    expect(extractCodexUsage({
+      type: "event_msg",
+      payload: {
+        type: "token_count",
+        info: {
+          total_token_usage: {
+            input_tokens: 2000,
+            cached_input_tokens: 900,
+            output_tokens: 40,
+            reasoning_output_tokens: 10,
+          },
+          last_token_usage: {
+            input_tokens: 1000,
+            cached_input_tokens: 900,
+            output_tokens: 20,
+            reasoning_output_tokens: 10,
+          },
+        },
+      },
+    })).toEqual({
+      inputTokens: 2000,
+      cachedInputTokens: 900,
+      outputTokens: 40,
+      reasoningOutputTokens: 10,
     });
   });
 
@@ -260,6 +295,55 @@ console.log(JSON.stringify({ type: 'turn.completed', usage: { input_tokens: 10, 
     expect(runs[1].stdin).toBe("Second prompt.");
   });
 
+  it("subtracts resumed-session usage from cumulative token snapshots", async () => {
+    const binDir = join(tempDir, "bin-codex-resume-usage");
+    mkdirSync(binDir, { recursive: true });
+    const fakeCodexPath = join(binDir, "codex");
+    writeFileSync(fakeCodexPath, `#!/usr/bin/env node
+for await (const _chunk of process.stdin) {}
+console.log(JSON.stringify({ type: 'thread.started', thread_id: 'codex-existing-session' }));
+console.log(JSON.stringify({ type: 'event_msg', payload: { type: 'token_count', info: {
+  total_token_usage: { input_tokens: 1200, cached_input_tokens: 900, output_tokens: 60, reasoning_output_tokens: 0 },
+  last_token_usage: { input_tokens: 200, cached_input_tokens: 100, output_tokens: 10, reasoning_output_tokens: 0 }
+} } }));
+console.log(JSON.stringify({ type: 'event_msg', payload: { type: 'token_count', info: {
+  total_token_usage: { input_tokens: 1500, cached_input_tokens: 1100, output_tokens: 80, reasoning_output_tokens: 0 },
+  last_token_usage: { input_tokens: 300, cached_input_tokens: 200, output_tokens: 20, reasoning_output_tokens: 0 }
+} } }));
+console.log(JSON.stringify({ type: 'item.completed', item: { type: 'agent_message', text: 'resumed usage done' } }));
+`);
+    chmodSync(fakeCodexPath, 0o755);
+    process.env.PATH = `${binDir}:${originalPathEnv ?? ""}`;
+
+    const result = await spawnCodexSubagent({
+      toolCallId: "codex-resume-usage",
+      description: "Codex resumed usage",
+      prompt: "Continue.",
+      profile: {
+        name: "codex-resume-usage",
+        description: "Codex resumed usage profile.",
+        backend: "codex",
+        model: "gpt-5.4-mini",
+      },
+      thinkingLevel: "medium",
+      ctx: { cwd } as ExtensionContext,
+      signal: undefined,
+      progressEnabled: false,
+      onProgress: undefined,
+      onUsage: () => undefined,
+      sessionId: "codex-existing-session",
+      persistSession: true,
+    });
+
+    expect(result.details.status).toBe("done");
+    expect(result.details.usage).toMatchObject({
+      input: 200,
+      cacheRead: 300,
+      output: 30,
+      latestCacheHitRate: 60,
+    });
+  });
+
   it("kills a codex child if abort lands after process spawn", async () => {
     const binDir = join(tempDir, "bin-abort-race");
     const markerPath = join(tempDir, "codex-child-completed");
@@ -352,7 +436,7 @@ process.stdout.write('x'.repeat(${MAX_STDOUT_LINE_CHARS + 1024}), () => {
     expect(result.details.error).toContain("without a newline");
   });
 
-  it("does not add unknown codex model cost to the status line", async () => {
+  it("marks unknown codex model cost in the status line", async () => {
     const subagentsDir = join(agentDir, "subagents");
     const binDir = join(tempDir, "bin-unknown-cost");
     mkdirSync(subagentsDir, { recursive: true });
@@ -403,7 +487,61 @@ console.log(JSON.stringify({ type: 'turn.completed', usage: { input_tokens: 1000
     });
     const final = statuses.filter((status) => status.key === "pi-flow").at(-1)?.text ?? "";
     expect(final).toContain("pi-flow ↑800 ↓50 R200");
-    expect(final).not.toContain("$");
+    expect(final).toContain("$?");
+
+    disposeSession(session);
+  });
+
+  it("computes aggregate cache hit rate from cumulative child usage", async () => {
+    const subagentsDir = join(agentDir, "subagents");
+    const binDir = join(tempDir, "bin-aggregate-cache");
+    mkdirSync(subagentsDir, { recursive: true });
+    mkdirSync(binDir, { recursive: true });
+    writeFileSync(join(subagentsDir, "codex-cache.md"), `---
+description: Emits deterministic cache usage.
+backend: codex
+model: gpt-5.4-mini
+---
+`);
+    const fakeCodexPath = join(binDir, "codex");
+    writeFileSync(fakeCodexPath, `#!/usr/bin/env node
+let stdin = '';
+for await (const chunk of process.stdin) stdin += chunk;
+const cached = stdin.includes('First') ? 900 : 100;
+console.log(JSON.stringify({ type: 'thread.started', thread_id: 'codex-cache-session' }));
+console.log(JSON.stringify({ type: 'item.completed', item: { type: 'agent_message', text: 'cache done' } }));
+console.log(JSON.stringify({ type: 'turn.completed', usage: { input_tokens: 1000, cached_input_tokens: cached, output_tokens: 10 } }));
+`);
+    chmodSync(fakeCodexPath, 0o755);
+    process.env.PATH = `${binDir}:${originalPathEnv ?? ""}`;
+
+    const { session, model, modelRegistry } = await createSession();
+    const tool = session.getToolDefinition("Agent") as any;
+    const statuses: Array<{ key: string; text: string | undefined }> = [];
+    const context = makeExecutionContext({
+      hasUI: true,
+      model,
+      modelRegistry,
+      onStatus: (key, text) => statuses.push({ key, text }),
+    });
+
+    await tool.execute(
+      "codex-cache-first",
+      { description: "First cache", subagent_type: "codex-cache", prompt: "First" },
+      undefined,
+      undefined,
+      context,
+    );
+    await tool.execute(
+      "codex-cache-second",
+      { description: "Second cache", subagent_type: "codex-cache", prompt: "Second" },
+      undefined,
+      undefined,
+      context,
+    );
+
+    const final = statuses.filter((status) => status.key === "pi-flow").at(-1)?.text ?? "";
+    expect(final).toContain("pi-flow ↑1.0k ↓20 R1.0k CH50.0%");
 
     disposeSession(session);
   });

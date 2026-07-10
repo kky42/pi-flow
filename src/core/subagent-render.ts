@@ -70,11 +70,13 @@ export function formatUsage(usage: SubagentUsage): string {
   if (usage.cacheWrite) {
     parts.push(`W${formatTokens(usage.cacheWrite)}`);
   }
-  if ((usage.cacheRead > 0 || usage.cacheWrite > 0) && usage.latestCacheHitRate !== undefined) {
+  if (usage.latestCacheHitRate !== undefined) {
     parts.push(`CH${usage.latestCacheHitRate.toFixed(1)}%`);
   }
   if (usage.cost) {
     parts.push(`$${usage.cost.toFixed(3)}${usage.costKnown === false ? "+?" : ""}`);
+  } else if (usage.costKnown === false) {
+    parts.push("$?");
   }
   return parts.join(" ");
 }

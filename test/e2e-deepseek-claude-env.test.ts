@@ -114,9 +114,7 @@ describe("DeepSeek-backed Claude Code E2E environment", () => {
 
   it("requires every real-model E2E driver to install the provider guard", () => {
     const drivers = [
-      "claude-subagent.mjs",
-      "codex-subagent.mjs",
-      "main-agent-comparison.mjs",
+      "basic-metrics.mjs",
       "session-key-resume.mjs",
       "workflow-features.mjs",
     ];

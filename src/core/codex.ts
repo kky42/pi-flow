@@ -35,10 +35,20 @@ export interface CodexModelPrice {
 }
 
 export const CODEX_MODEL_PRICES_USD_PER_MILLION: Record<string, CodexModelPrice> = {
+  "gpt-5.6-sol": { input: 5, cachedInput: 0.5, output: 30 },
+  "gpt-5.6-terra": { input: 2.5, cachedInput: 0.25, output: 15 },
+  "gpt-5.6-luna": { input: 1, cachedInput: 0.1, output: 6 },
   "gpt-5.5": { input: 1.25, cachedInput: 0.125, output: 10 },
   "gpt-5.4": { input: 1.25, cachedInput: 0.125, output: 10 },
   "gpt-5.4-mini": { input: 0.25, cachedInput: 0.025, output: 2 },
 };
+
+const CODEX_LONG_CONTEXT_THRESHOLD = 272_000;
+const CODEX_LONG_CONTEXT_PRICING_MODELS = new Set([
+  "gpt-5.6-sol",
+  "gpt-5.6-terra",
+  "gpt-5.6-luna",
+]);
 
 function asRecord(value: unknown): Record<string, unknown> | undefined {
   return value !== null && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : undefined;
@@ -66,6 +76,15 @@ export function estimateCodexCostUsd(model: string | undefined, usage: CodexToke
   const priceModel = normalizeCodexPriceModel(model);
   const price = priceModel ? CODEX_MODEL_PRICES_USD_PER_MILLION[priceModel] : undefined;
   if (!price) {
+    return undefined;
+  }
+  // GPT-5.6 applies different rates when an individual prompt exceeds 272K.
+  // Codex reports aggregate run usage, so a larger total cannot be priced safely.
+  if (
+    priceModel &&
+    CODEX_LONG_CONTEXT_PRICING_MODELS.has(priceModel) &&
+    usage.inputTokens > CODEX_LONG_CONTEXT_THRESHOLD
+  ) {
     return undefined;
   }
   const cachedInputTokens = Math.max(0, usage.cachedInputTokens);
@@ -183,10 +202,26 @@ export function extractCodexSessionId(event: Record<string, unknown>): string | 
   return candidates.find((candidate): candidate is string => typeof candidate === "string" && candidate.trim() !== "");
 }
 
-export function extractCodexUsage(event: Record<string, unknown>): CodexTokenUsage | undefined {
-  if (event.type === "turn.completed") {
-    return parseUsageRecord(event.usage);
-  }
+interface CodexTokenCountSnapshot {
+  total?: CodexTokenUsage;
+  last?: CodexTokenUsage;
+}
+
+interface CodexUsageTrackerState {
+  tokenCountBaseline?: CodexTokenUsage;
+  terminalUsageSeen: boolean;
+}
+
+function subtractCodexUsage(total: CodexTokenUsage, baseline: CodexTokenUsage): CodexTokenUsage {
+  return {
+    inputTokens: Math.max(0, total.inputTokens - baseline.inputTokens),
+    cachedInputTokens: Math.max(0, total.cachedInputTokens - baseline.cachedInputTokens),
+    outputTokens: Math.max(0, total.outputTokens - baseline.outputTokens),
+    reasoningOutputTokens: Math.max(0, total.reasoningOutputTokens - baseline.reasoningOutputTokens),
+  };
+}
+
+function extractCodexTokenCountSnapshot(event: Record<string, unknown>): CodexTokenCountSnapshot | undefined {
   if (event.type !== "event_msg") {
     return undefined;
   }
@@ -195,7 +230,51 @@ export function extractCodexUsage(event: Record<string, unknown>): CodexTokenUsa
     return undefined;
   }
   const info = asRecord(payload.info);
-  return info ? parseUsageRecord(info.last_token_usage) : undefined;
+  if (!info) {
+    return undefined;
+  }
+  const total = parseUsageRecord(info.total_token_usage);
+  const last = parseUsageRecord(info.last_token_usage);
+  return total || last ? { total, last } : undefined;
+}
+
+export function extractCodexUsage(event: Record<string, unknown>): CodexTokenUsage | undefined {
+  if (event.type === "turn.completed") {
+    return parseUsageRecord(event.usage);
+  }
+  const snapshot = extractCodexTokenCountSnapshot(event);
+  return snapshot?.total ?? snapshot?.last;
+}
+
+function extractCodexRunUsage(
+  event: Record<string, unknown>,
+  state: CodexUsageTrackerState,
+): CodexTokenUsage | undefined {
+  if (event.type === "turn.completed") {
+    const usage = parseUsageRecord(event.usage);
+    if (usage) {
+      state.terminalUsageSeen = true;
+    }
+    return usage;
+  }
+  if (state.terminalUsageSeen) {
+    return undefined;
+  }
+  const snapshot = extractCodexTokenCountSnapshot(event);
+  if (!snapshot) {
+    return undefined;
+  }
+  if (!snapshot.total) {
+    return snapshot.last;
+  }
+  if (!state.tokenCountBaseline) {
+    // total_token_usage survives `codex exec resume`; total-minus-last is the
+    // usage that predates this subprocess, which must not be billed again.
+    state.tokenCountBaseline = snapshot.last
+      ? subtractCodexUsage(snapshot.total, snapshot.last)
+      : { inputTokens: 0, cachedInputTokens: 0, outputTokens: 0, reasoningOutputTokens: 0 };
+  }
+  return subtractCodexUsage(snapshot.total, state.tokenCountBaseline);
 }
 
 function textFromCodexValue(value: unknown): string | undefined {
@@ -370,6 +449,7 @@ export async function spawnCodexSubagent(params: {
   });
   const progress = emitter.progress;
   let latestUsage = emptyUsage(params.profile.model);
+  const usageTracker: CodexUsageTrackerState = { terminalUsageSeen: false };
   let resultText = "";
   let sessionId = params.sessionId?.trim() || undefined;
   const stderrBuffer = createBoundedBuffer(MAX_STDERR_CHARS);
@@ -394,7 +474,7 @@ export async function spawnCodexSubagent(params: {
       emitter.addActivity(activity);
       emitter.emitSoon();
     }
-    const usage = extractCodexUsage(event);
+    const usage = extractCodexRunUsage(event, usageTracker);
     if (usage) {
       latestUsage = codexUsageToSubagentUsage(params.profile.model, usage);
       if (progress) {

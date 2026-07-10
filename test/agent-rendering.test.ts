@@ -22,6 +22,7 @@ import { createSubagentExtension } from "../src/pi-subagent.ts";
 import { getSubagentProfiles, loadBuiltinSubagentProfiles } from "../src/profiles.ts";
 import { buildClaudeArgs, claudeUsageToSubagentUsage, extractClaudeCostUsd, extractClaudeError, extractClaudeFinalText, extractClaudeUsage, spawnClaudeSubagent } from "../src/core/claude.ts";
 import { buildCodexArgs, codexUsageToSubagentUsage, estimateCodexCostUsd, extractCodexFinalText, spawnCodexSubagent } from "../src/core/codex.ts";
+import { formatUsage } from "../src/core/subagent-render.ts";
 import { packageRoot, setupPiSubagentTestHarness } from "./helpers/pi-subagent-harness.ts";
 
 describe("pi-subagent rendering", () => {
@@ -49,6 +50,18 @@ describe("pi-subagent rendering", () => {
     originalPathEnv = state.originalPathEnv;
     registrations = state.registrations;
   });
+  it("renders zero cache hits and unknown cost explicitly", () => {
+    expect(formatUsage({
+      input: 1000,
+      output: 0,
+      cacheRead: 0,
+      cacheWrite: 0,
+      cost: 0,
+      costKnown: false,
+      latestCacheHitRate: 0,
+    })).toBe("↑1.0k ↓0 CH0.0% $?");
+  });
+
   it("renders renderCall and renderResult with subagent type, description, and status", async () => {
     const subagentsDir = join(agentDir, "subagents");
     mkdirSync(subagentsDir, { recursive: true });

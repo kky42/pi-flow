@@ -1,7 +1,6 @@
 #!/usr/bin/env node
-// Complex end-to-end probe for the `workflow` tool. Unlike main-agent-comparison
-// (which observes whether the model *chooses* to delegate), this driver pins down
-// EVERY workflow feature by handing the model exact scripts to run verbatim and
+// Complex end-to-end probe for the `workflow` tool. This driver pins down EVERY
+// workflow feature by handing the model exact scripts to run verbatim and
 // asserting on the persisted session details + run journal.
 //
 // Features covered:

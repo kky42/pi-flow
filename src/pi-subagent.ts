@@ -98,7 +98,6 @@ interface ActiveAgentRun {
 
 interface SubagentUsageStatusState {
   calls: Map<string, SubagentUsage>;
-  latestCacheHitRate?: number;
 }
 
 interface CreateAgentToolOptions {
@@ -236,7 +235,6 @@ function getUsageTotals(state: SubagentUsageStatusState): SubagentUsage {
     cacheRead: 0,
     cacheWrite: 0,
     cost: 0,
-    latestCacheHitRate: state.latestCacheHitRate,
   };
   for (const usage of state.calls.values()) {
     totals.input += usage.input;
@@ -248,6 +246,8 @@ function getUsageTotals(state: SubagentUsageStatusState): SubagentUsage {
       totals.costKnown = false;
     }
   }
+  const promptTokens = totals.input + totals.cacheRead + totals.cacheWrite;
+  totals.latestCacheHitRate = promptTokens > 0 ? (totals.cacheRead / promptTokens) * 100 : undefined;
   return totals;
 }
 
@@ -271,9 +271,6 @@ function updateUsageStatus(
   usage: SubagentUsage,
 ): void {
   state.calls.set(toolCallId, usage);
-  if (usage.latestCacheHitRate !== undefined) {
-    state.latestCacheHitRate = usage.latestCacheHitRate;
-  }
   publishUsageStatus(ctx, state);
 }
 
@@ -613,7 +610,6 @@ export function createSubagentExtension(options: SubagentExtensionOptions = {}):
       rootState.sessionBindings.clear();
       rootState.sessionKeyLocks = new SessionKeyLocks();
       usageStatusState.calls.clear();
-      usageStatusState.latestCacheHitRate = undefined;
       if (ctx.hasUI) {
         ctx.ui.setStatus(STATUS_KEY, undefined);
       }

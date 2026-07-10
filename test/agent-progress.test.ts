@@ -408,8 +408,10 @@ describe("pi-subagent progress and status", () => {
       cacheRead: first.details.usage.cacheRead + second.details.usage.cacheRead,
       cacheWrite: first.details.usage.cacheWrite + second.details.usage.cacheWrite,
       cost: first.details.usage.cost + second.details.usage.cost,
-      latestCacheHitRate: second.details.usage.latestCacheHitRate,
+      latestCacheHitRate: undefined as number | undefined,
     };
+    const promptTokens = usage.input + usage.cacheRead + usage.cacheWrite;
+    usage.latestCacheHitRate = promptTokens > 0 ? (usage.cacheRead / promptTokens) * 100 : undefined;
     const expected = `pi-flow ↑${formatTestTokens(usage.input)} ↓${formatTestTokens(usage.output)}`;
 
     expect(statuses.some((status) => status.key === "pi-flow" && status.text)).toBe(true);
