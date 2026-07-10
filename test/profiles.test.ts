@@ -49,7 +49,7 @@ describe("pi-subagent profiles", () => {
     originalPathEnv = state.originalPathEnv;
     registrations = state.registrations;
   });
-  it("loads built-in subagent profiles from bundled markdown files", () => {
+  it("loads general-purpose as the only built-in subagent profile", () => {
     const profiles = loadBuiltinSubagentProfiles(join(packageRoot, "src", "subagents"));
 
     expect(profiles.get("general-purpose")).toMatchObject({
@@ -58,12 +58,28 @@ describe("pi-subagent profiles", () => {
       systemPrompt: undefined,
       tools: undefined,
     });
+    expect(profiles.has("explorer")).toBe(false);
+    expect(profiles.size).toBe(1);
+  });
+
+  it("loads explorer when the user defines it as a custom profile", () => {
+    const subagentsDir = join(agentDir, "subagents");
+    mkdirSync(subagentsDir, { recursive: true });
+    writeFileSync(join(subagentsDir, "explorer.md"), `---
+description: User-defined read-only search agent.
+tools: read, grep, find, ls, bash
+---
+
+Custom explorer role.`);
+
+    const profiles = getSubagentProfiles(agentDir);
+
     expect(profiles.get("explorer")).toMatchObject({
       name: "explorer",
-      description: expect.stringContaining("Fast read-only search agent"),
+      description: "User-defined read-only search agent.",
       tools: ["read", "grep", "find", "ls", "bash"],
+      systemPrompt: "Custom explorer role.",
     });
-    expect(profiles.get("explorer")?.systemPrompt).toContain("Explorer Subagent Role");
   });
 
   it("loads custom subagent profiles from filename-derived names", () => {
@@ -182,7 +198,7 @@ description: Valid frontmatter but empty body.
     expect(profiles.has("empty-list-tools")).toBe(false);
     expect(profiles.has("malformed-yaml")).toBe(false);
     expect(profiles.has("general-purpose")).toBe(true);
-    expect(profiles.has("explorer")).toBe(true);
+    expect(profiles.has("explorer")).toBe(false);
   });
 
   it("loads codex-backed custom profiles with bare model names", () => {

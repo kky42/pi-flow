@@ -40,10 +40,6 @@ _Avoid_: Background execution
 A one-shot subagent conversation that starts with no parent messages, tool results, or reasoning when `session_key` is omitted, while still loading the normal project environment for the same working directory. The caller must include any needed conversation-specific context in a fresh delegated prompt. Passing the same caller-chosen `session_key` explicitly creates/continues that child backend conversation instead; pi-flow maps the key to the backend-native session id internally.
 _Avoid_: Implicit inherited context, hidden forked context
 
-**Explorer**:
-The built-in file-search profile. It is selected as `explorer` and has no aliases.
-_Avoid_: Explore
-
 ## Example Dialogue
 
 Developer: "Should this subagent keep the parent conversation?"

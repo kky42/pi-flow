@@ -6,10 +6,9 @@
 - The registered tool is `Agent`. v2 adds an opt-in `workflow` tool (see "pi-flow workflows (v2)" below); the v1 contract here still governs the `Agent` tool.
 - Tool parameters follow the Claude Code-style shape: `description`, `prompt`, optional `subagent_type`, and optional `session_key` for an explicitly resumable child conversation.
 - `description` is UI/routing metadata. `prompt` is the full subagent task.
-- V1 presets are `general-purpose` and `explorer`. No aliases.
+- The only V1 built-in profile is `general-purpose`. There are no built-in aliases.
 - `subagent_type` defaults to `general-purpose`.
 - `general-purpose` adds no role prompt.
-- `explorer` appends a Claude Code Explore-inspired role prompt to pi's normal system prompt.
 - Do not replace pi's base system prompt in v1.
 - V1 is foreground-only. Do not add background execution, result polling, steering, scheduling, per-call model override, or per-call thinking override. Session continuation is explicit and foreground-only via caller-chosen `session_key`.
 - Tool calls still only accept `description`, `prompt`, optional `subagent_type`, and optional `session_key`; backend/model/thinking selection is profile-based.
@@ -18,13 +17,13 @@
 - Pi-backed subagents inherit the caller's current model and thinking level unless a custom profile pins `model` or `thinking`.
 - Custom profiles may set `backend: pi` (default), `backend: codex`, or `backend: claude`. Codex-backed profiles run external `codex exec --json --dangerously-bypass-approvals-and-sandbox --ephemeral -- -` for one-shot calls, omit `--ephemeral` for keyed first calls, and use `codex exec resume --json ... <session_id> -` for keyed continuation; they send the task prompt on stdin, pass the profile body as `developer_instructions`, pass profile `model`/`thinking` through Codex CLI, parse `thread.started.thread_id`, token usage from Codex JSONL events, and estimate cost for listed models. Claude-backed profiles run external `claude -p --output-format stream-json --verbose --dangerously-skip-permissions --no-session-persistence` for one-shot calls, omit `--no-session-persistence` for keyed first calls, add `--resume <session_id>` for keyed continuation, send the task prompt on stdin, pass the profile body as `--append-system-prompt`, pass profile `model`/`thinking` through Claude Code, parse `system/init.session_id`, parse token usage from stream JSON, and use Claude Code's reported `total_cost_usd` when available. External CLI backends intentionally run in yolo/no-approval mode; only use them in trusted repositories.
 - `tools` frontmatter is a pi-backend child-session allowlist only. External CLI profiles use their CLI's own tool and permission surface.
-- There is no pi-flow permissions system in v1. Presets are prompt-specialized ordinary pi agents; external backends are explicit user dependencies.
+- There is no pi-flow permissions system in v1. Profiles are ordinary agents with optional prompts and tool allow-lists; external backends are explicit user dependencies.
 - Pi-backed child sessions cannot launch other pi subagents. Do not give pi child sessions the `Agent` or `workflow` tool, or the coordinator prompt.
 - External CLI backends are not given pi `Agent`/`workflow` tools, but their own CLIs may expose nested/delegation features; do not try to block that from this extension.
 - Parallel delegation is allowed and bounded by a global `maxConcurrentSubagents` limit (default `12`), which caps how many subagents run concurrently across the whole agent run. A slot is taken on launch and released on completion/failure/abort. In v2 this same cap is shared with the `workflow` tool.
 - Do not put exact concurrency values in the model-facing coordinator prompt. The prompt should say parallel delegation is bounded and queued.
 - Users can override the limit with the pi extension flag `--max-concurrent-subagents <n>`; embedded extension setups can set the default with `createFlowExtension({ maxConcurrentSubagents })` (compatibility alias: `createSubagentExtension`).
-- Custom subagent profiles are supported from `~/.pi/agent/subagents/*.md`; built-ins remain `general-purpose` and `explorer`. No aliases.
+- Custom subagent profiles are supported from `~/.pi/agent/subagents/*.md`; the only built-in is `general-purpose`. A user can define a custom profile named `explorer`, but it is not bundled.
 
 ## pi-flow workflows (v2)
 
@@ -77,7 +76,7 @@
 
 Interactive tmux TUI runs use `deepseek/deepseek-v4-flash` with high thinking and isolated `--no-*` resource flags.
 
-- `width`: validates eight parallel foreground `explorer` delegations.
+- `width`: validates eight parallel foreground delegations.
 - `proactive-multirepo-v3`: validates proactive parallel delegation for a two-repo auth comparison.
 - `proactive-fanout-v3`: validates proactive multi-lane delegation for TODO/FIXME/skipped-test search.
 - `proactive-migration-v2`: validates proactive second-opinion delegation for a risky migration review.

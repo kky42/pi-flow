@@ -130,9 +130,10 @@ describe("pi-subagent agent contract", () => {
     expect(rootContext?.systemPrompt).not.toContain("max concurrency 4");
     expect(rootContext?.systemPrompt).toContain("Available agents");
     expect(rootContext?.systemPrompt).toContain("general-purpose: General-purpose agent for researching complex questions");
-    expect(rootContext?.systemPrompt).toContain("explorer: Fast read-only search agent");
+    expect(rootContext?.systemPrompt).not.toContain("explorer: Fast read-only search agent");
     expect(rootContext?.systemPrompt).toContain("Reach for Agent when the task matches an available agent");
     expect(rootContext?.systemPrompt).toContain('User asks "explore this repo"');
+    expect(rootContext?.systemPrompt).toContain('subagent_type "general-purpose"');
     expect(rootContext?.systemPrompt).toContain("single-fact lookup");
     expect(rootContext?.systemPrompt).toContain("Once you delegate a search");
 

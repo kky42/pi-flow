@@ -85,12 +85,12 @@ describe("pi-subagent proactive routing", () => {
               [
                 fauxToolCall("Agent", {
                   description: "Audit repo-a auth",
-                  subagent_type: "explorer",
+                  subagent_type: "general-purpose",
                   prompt: "Audit auth implementation under repo-a/. Report key files and flow.",
                 }),
                 fauxToolCall("Agent", {
                   description: "Audit repo-b auth",
-                  subagent_type: "explorer",
+                  subagent_type: "general-purpose",
                   prompt: "Audit auth implementation under repo-b/. Report key files and flow.",
                 }),
               ],
@@ -115,18 +115,18 @@ describe("pi-subagent proactive routing", () => {
       disposeSession(session);
     });
 
-    it("scenario 2: broad codebase exploration → coordinator-aware router delegates to explorer", async () => {
+    it("scenario 2: broad codebase exploration → coordinator-aware router delegates to general-purpose", async () => {
       const { session, registration } = await createSession();
 
       registration.setResponses([
         makeRouter((userText, systemPrompt) => {
           const broad = /across this codebase|where is .* handled/i.test(userText);
-          const explorerHinted = systemPrompt.includes("explorer") && systemPrompt.includes("locating files");
-          if (broad && explorerHinted) {
+          const repoSurveyHinted = systemPrompt.includes("explore or survey a repo") && systemPrompt.includes("concise read-only map");
+          if (broad && repoSurveyHinted) {
             return [
               fauxToolCall("Agent", {
                 description: "Locate rate limiting",
-                subagent_type: "explorer",
+                subagent_type: "general-purpose",
                 prompt: "Find every place rate limiting is implemented or referenced. Report files and symbols.",
               }),
             ];
@@ -186,9 +186,9 @@ describe("pi-subagent proactive routing", () => {
           const promptSaysParallel = systemPrompt.includes("multiple Agent calls");
           if (fanOut && promptSaysParallel) {
             return [
-              fauxToolCall("Agent", { description: "Find TODOs", subagent_type: "explorer", prompt: "Grep for TODO." }),
-              fauxToolCall("Agent", { description: "Find FIXMEs", subagent_type: "explorer", prompt: "Grep for FIXME." }),
-              fauxToolCall("Agent", { description: "Find skipped tests", subagent_type: "explorer", prompt: "Grep for it.skip / xit / describe.skip." }),
+              fauxToolCall("Agent", { description: "Find TODOs", subagent_type: "general-purpose", prompt: "Grep for TODO." }),
+              fauxToolCall("Agent", { description: "Find FIXMEs", subagent_type: "general-purpose", prompt: "Grep for FIXME." }),
+              fauxToolCall("Agent", { description: "Find skipped tests", subagent_type: "general-purpose", prompt: "Grep for it.skip / xit / describe.skip." }),
             ];
           }
           return "no delegation";

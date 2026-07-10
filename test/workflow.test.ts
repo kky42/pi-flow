@@ -185,10 +185,10 @@ describe("runWorkflow", () => {
       return call.label;
     };
     await runWorkflow(
-      `${META}await agent('a', { label: 'one' });\nawait agent('b', { label: 'two', subagent_type: 'explorer' });\nreturn null;`,
+      `${META}await agent('a', { label: 'one' });\nawait agent('b', { label: 'two', subagent_type: 'custom-agent' });\nreturn null;`,
       { cwd: "/tmp", limiter: new ConcurrencyLimiter(4), runAgent },
     );
-    expect(seen).toEqual(["general-purpose", "explorer"]);
+    expect(seen).toEqual(["general-purpose", "custom-agent"]);
   });
 
   it("passes normalized workflow agent session_key through to the shared subagent runner", async () => {
@@ -746,7 +746,7 @@ describe("workflow tool rendering", () => {
       agentCount: 3,
       phases: ["scan"],
       agents: [
-        { index: 1, label: "alpha", subagentType: "explorer", backend: "pi", status: "running" },
+        { index: 1, label: "alpha", subagentType: "custom-agent", backend: "pi", status: "running" },
         { index: 2, label: "beta", phase: "scan", subagentType: "codex-reviewer", backend: "codex", status: "done" },
         { index: 3, label: "gamma", subagentType: "claude-reviewer", backend: "claude", status: "error" },
       ],
@@ -760,7 +760,7 @@ describe("workflow tool rendering", () => {
     expect(text).toContain("✓ scan done · 1/1");
     expect(text).toContain("✓ Codex Agent(codex-reviewer, beta)");
     expect(text).toContain("▶ unphased running · 0/2");
-    expect(text).toContain("Pi Agent(explorer: alpha)");
+    expect(text).toContain("Pi Agent(custom-agent: alpha)");
     expect(text).toContain("✗ Claude Agent(claude-reviewer, gamma)");
     // declared phase renders before the unphased bucket.
     expect(text.indexOf("scan")).toBeLessThan(text.indexOf("unphased"));

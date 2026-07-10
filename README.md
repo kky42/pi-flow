@@ -62,23 +62,24 @@ Use it when you want to:
 
 ## Define subagents
 
-`pi-flow` ships two profiles:
+`pi-flow` ships one built-in profile:
 
 - `general-purpose` — broad research, code search, and multi-step investigation.
-- `explorer` — fast read-only repository mapping and reference search.
 
 Add your own profiles as Markdown files in `~/.pi/agent/subagents/<name>.md`. The filename becomes the `subagent_type` used by `Agent` and workflow `agent()` calls.
 
+For example, add `~/.pi/agent/subagents/explorer.md` if you want an opt-in read-only search profile:
+
 ```md
 ---
-description: Reviews backend changes with local pi tools.
+description: Fast read-only search agent for locating code and mapping repositories.
 backend: pi
-tools: read, grep, find, bash
+tools: read, grep, find, ls, bash
 model: inherit
 thinking: high
 ---
 
-You are a careful backend reviewer. Focus on correctness, tests, and regressions.
+Search and analyze existing files without creating, editing, deleting, or installing anything. Report concise findings with relevant files and symbols.
 ```
 
 Frontmatter fields:
@@ -120,15 +121,15 @@ External profiles run local CLI commands in no-approval mode (`codex exec ... --
 Ask pi naturally:
 
 ```text
-Explore this repo with the explorer subagent, then summarize the important files.
+Use the general-purpose subagent to map this repo without editing files, then summarize the important files.
 ```
 
 Or call the tool shape directly from an agent/tooling context:
 
 ```ts
 Agent({
-  description: "Explore repo",
-  subagent_type: "explorer",
+  description: "Map repo",
+  subagent_type: "general-purpose",
   prompt: "Map the project purpose, key directories, scripts, tests, and caveats. Do not edit files.",
 });
 ```

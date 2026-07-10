@@ -49,7 +49,16 @@ describe("pi-subagent pi backend behavior", () => {
     originalPathEnv = state.originalPathEnv;
     registrations = state.registrations;
   });
-  it("runs an explorer subagent with fresh context and appended explorer prompt", async () => {
+  it("runs a custom read-only subagent with fresh context and an appended role prompt", async () => {
+    const subagentsDir = join(agentDir, "subagents");
+    mkdirSync(subagentsDir, { recursive: true });
+    writeFileSync(join(subagentsDir, "code-searcher.md"), `---
+description: Searches code without editing files.
+tools: read, grep, find, ls, bash
+---
+
+# Custom Code Searcher Role`);
+
     const { session, registration } = await createSession();
     let childContext: Context | undefined;
     let childOptions: SimpleStreamOptions | undefined;
@@ -59,7 +68,7 @@ describe("pi-subagent pi backend behavior", () => {
     registration.setResponses([
       fauxAssistantMessage([fauxToolCall("Agent", {
         description: "Find auth files",
-        subagent_type: "explorer",
+        subagent_type: "code-searcher",
         prompt: "Search for the auth flow and report key files.",
       })], { stopReason: "toolUse" }),
       (context, options, _state, model) => {
@@ -78,7 +87,7 @@ describe("pi-subagent pi backend behavior", () => {
 
     expect(childModel?.id).toBe("faux-thinker");
     expect((childOptions as { reasoning?: string } | undefined)?.reasoning).toBe("high");
-    expect(childContext?.systemPrompt).toContain("Explorer Subagent Role");
+    expect(childContext?.systemPrompt).toContain("Custom Code Searcher Role");
     expect(childContext?.systemPrompt).not.toContain("Subagent Delegation");
     expect(getToolNames(childContext)).toEqual(["bash", "find", "grep", "ls", "read"]);
     expect(JSON.stringify(childContext?.messages)).toContain("Search for the auth flow");
@@ -142,6 +151,14 @@ describe("pi-subagent pi backend behavior", () => {
     const piDir = join(cwd, ".pi");
     mkdirSync(piDir, { recursive: true });
     writeFileSync(join(piDir, "APPEND_SYSTEM.md"), "Project append marker must survive into subagents.");
+    const subagentsDir = join(agentDir, "subagents");
+    mkdirSync(subagentsDir, { recursive: true });
+    writeFileSync(join(subagentsDir, "context-checker.md"), `---
+description: Checks project context without editing files.
+tools: read
+---
+
+# Custom Context Checker Role`);
 
     const { session, registration } = await createSession();
     let childContext: Context | undefined;
@@ -149,7 +166,7 @@ describe("pi-subagent pi backend behavior", () => {
     registration.setResponses([
       fauxAssistantMessage([fauxToolCall("Agent", {
         description: "Find auth files",
-        subagent_type: "explorer",
+        subagent_type: "context-checker",
         prompt: "Search for the auth flow and report key files.",
       })], { stopReason: "toolUse" }),
       (context) => {
@@ -162,7 +179,7 @@ describe("pi-subagent pi backend behavior", () => {
     await session.prompt("Please delegate the auth search.");
 
     expect(childContext?.systemPrompt).toContain("Project append marker must survive into subagents.");
-    expect(childContext?.systemPrompt).toContain("Explorer Subagent Role");
+    expect(childContext?.systemPrompt).toContain("Custom Context Checker Role");
     expect(childContext?.systemPrompt).not.toContain("Subagent Delegation");
 
     disposeSession(session);
@@ -186,7 +203,6 @@ describe("pi-subagent pi backend behavior", () => {
 
     await session.prompt("Delegate config research.");
 
-    expect(childContext?.systemPrompt).not.toContain("Explorer Subagent Role");
     expect(childContext?.systemPrompt).not.toContain("Subagent Delegation");
     expect(JSON.stringify(childContext?.messages)).toContain("Inspect config loading.");
 
@@ -226,7 +242,6 @@ Custom reviewer prompt marker.`);
     await session.prompt("Delegate code review.");
 
     expect(childContext?.systemPrompt).toContain("Custom reviewer prompt marker.");
-    expect(childContext?.systemPrompt).not.toContain("Explorer Subagent Role");
     expect(getToolNames(childContext)).toEqual(["bash", "read"]);
     expect((childOptions as { reasoning?: string } | undefined)?.reasoning).toBe("low");
     expect(JSON.stringify(childContext?.messages)).toContain("Review the latest diff.");
@@ -302,14 +317,14 @@ Default tools prompt marker.`);
   });
 
 
-  it("rejects unknown subagent names without aliases", async () => {
+  it("rejects explorer when the user has not defined it as a custom profile", async () => {
     const { session, registration } = await createSession();
     let rootContinuationContext: Context | undefined;
 
     registration.setResponses([
       fauxAssistantMessage([fauxToolCall("Agent", {
         description: "Find auth files",
-        subagent_type: "explore",
+        subagent_type: "explorer",
         prompt: "Search for auth.",
       })], { stopReason: "toolUse" }),
       (context) => {
@@ -318,7 +333,7 @@ Default tools prompt marker.`);
       },
     ]);
 
-    await session.prompt("Delegate with old name.");
+    await session.prompt("Delegate with the removed built-in name.");
 
     expect(JSON.stringify(rootContinuationContext?.messages)).toContain("Unknown subagent_type");
     expect(registration.getPendingResponseCount()).toBe(0);

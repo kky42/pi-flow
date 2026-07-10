@@ -50,6 +50,13 @@ describe("pi-subagent rendering", () => {
     registrations = state.registrations;
   });
   it("renders renderCall and renderResult with subagent type, description, and status", async () => {
+    const subagentsDir = join(agentDir, "subagents");
+    mkdirSync(subagentsDir, { recursive: true });
+    writeFileSync(join(subagentsDir, "code-searcher.md"), `---
+description: Searches code without editing files.
+---
+`);
+
     let captured: any;
     const flags = new Map<string, boolean | string>();
     const mockApi: any = {
@@ -75,13 +82,13 @@ describe("pi-subagent rendering", () => {
 
     const callText = renderToText(
       captured.renderCall(
-        { description: "Find auth files", subagent_type: "explorer", prompt: "..." },
+        { description: "Find auth files", subagent_type: "code-searcher", prompt: "..." },
         theme,
         { executionStarted: false },
       ),
     );
     expect(callText).toContain("Pi Agent");
-    expect(callText).toContain("explorer");
+    expect(callText).toContain("code-searcher");
     expect(callText).toContain("Find auth files");
 
     const partialCallText = renderToText(
@@ -98,7 +105,7 @@ describe("pi-subagent rendering", () => {
       content: [{ type: "text" as const, text: "x" }],
       details: {
         description: "Find auth files",
-        subagentType: "explorer" as const,
+        subagentType: "code-searcher" as const,
         backend: "pi" as const,
         status,
         ...(status === "done" ? { result: "ok" } : { error: "fail" }),
@@ -107,7 +114,7 @@ describe("pi-subagent rendering", () => {
 
     const completedText = renderToText(captured.renderResult(buildResult("done"), {}, theme, {}));
     expect(completedText).toContain("Pi Agent");
-    expect(completedText).toContain("explorer");
+    expect(completedText).toContain("code-searcher");
     expect(completedText).toContain("Find auth files");
     expect(completedText).toContain("✓");
 
@@ -159,7 +166,7 @@ describe("pi-subagent rendering", () => {
 
     const executingCallText = renderToText(
       captured.renderCall(
-        { description: "Find auth files", subagent_type: "explorer", prompt: "..." },
+        { description: "Find auth files", subagent_type: "code-searcher", prompt: "..." },
         theme,
         { executionStarted: true },
       ),
@@ -168,6 +175,13 @@ describe("pi-subagent rendering", () => {
   });
 
   it("renders compact progress with rolling activity and descriptions", async () => {
+    const subagentsDir = join(agentDir, "subagents");
+    mkdirSync(subagentsDir, { recursive: true });
+    writeFileSync(join(subagentsDir, "code-searcher.md"), `---
+description: Searches code without editing files.
+---
+`);
+
     let captured: any;
     const flags = new Map<string, boolean | string>();
     const mockApi: any = {
@@ -194,13 +208,13 @@ describe("pi-subagent rendering", () => {
         content: [{ type: "text" as const, text: "done" }],
         details: {
           description: "Research repo",
-          subagentType: "explorer" as const,
+          subagentType: "code-searcher" as const,
           backend: "pi" as const,
           status: "running" as const,
           progress: {
             id: "root-progress",
             description: "Research repo",
-            subagentType: "explorer" as const,
+            subagentType: "code-searcher" as const,
             backend: "pi" as const,
             status: "running" as const,
             startedAt: now - 2000,
@@ -220,7 +234,7 @@ describe("pi-subagent rendering", () => {
 
       const text = renderToText(captured.renderResult(result, {}, theme, {}));
 
-      expect(text).toContain("Pi Agent(explorer: Research repo)");
+      expect(text).toContain("Pi Agent(code-searcher: Research repo)");
       expect(text).toContain("2s ↑81k ↓4.9k R602k CH94.7% $0.850");
       expect(text).toContain("... +2 earlier events");
       expect(text).toContain("Read src/types.ts");
