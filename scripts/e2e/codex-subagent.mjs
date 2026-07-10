@@ -26,9 +26,16 @@ import { homedir, tmpdir } from "node:os";
 import path from "node:path";
 import process from "node:process";
 import { fileURLToPath } from "node:url";
+import {
+  DEEPSEEK_ANTHROPIC_BASE_URL,
+  loadDotEnv,
+  prepareDeepseekClaudeE2EEnv,
+} from "./lib/deepseek-claude-env.mjs";
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..");
 const extensionPath = path.join(repoRoot, "index.ts");
+
+loadDotEnv(path.join(repoRoot, ".env"));
 
 function parseArgs(argv) {
   const options = {
@@ -36,6 +43,7 @@ function parseArgs(argv) {
     rootThinking: "medium",
     codexModel: "gpt-5.4-mini",
     codexThinking: "medium",
+    deepseekApiKeyEnv: "DEEPSEEK_API_KEY",
     agentDir: process.env.PI_CODING_AGENT_DIR || path.join(homedir(), ".pi", "agent"),
     runRoot: path.join(tmpdir(), `pi-codex-subagent-e2e-${Date.now()}`),
     keep: false,
@@ -53,6 +61,7 @@ function parseArgs(argv) {
     else if (arg === "--root-thinking") options.rootThinking = value();
     else if (arg === "--codex-model") options.codexModel = value();
     else if (arg === "--codex-thinking") options.codexThinking = value();
+    else if (arg === "--deepseek-api-key-env") options.deepseekApiKeyEnv = value();
     else if (arg === "--agent-dir") options.agentDir = path.resolve(value());
     else if (arg === "--run-root") options.runRoot = path.resolve(value());
     else if (arg === "--timeout-ms") options.timeoutMs = Number(value());
@@ -64,7 +73,7 @@ function parseArgs(argv) {
 }
 
 function printHelp() {
-  console.log(`Usage: node scripts/e2e/codex-subagent.mjs [options]\n\nOptions:\n  --root-model <provider/model>   pi root model (default: openai/gpt-5.4-mini)\n  --root-thinking <level>         pi root thinking level (default: medium)\n  --codex-model <model>           Codex CLI subagent model (default: gpt-5.4-mini)\n  --codex-thinking <level>        profile thinking level passed to Codex (default: medium)\n  --agent-dir <dir>               pi agent dir (default: PI_CODING_AGENT_DIR or ~/.pi/agent)\n  --run-root <dir>                temp run root\n  --timeout-ms <ms>               pi process timeout (default: 180000)\n  --keep                          keep temp run root and temporary profile\n`);
+  console.log(`Usage: node scripts/e2e/codex-subagent.mjs [options]\n\nOptions:\n  --root-model <provider/model>   pi root model (default: openai/gpt-5.4-mini)\n  --root-thinking <level>         pi root thinking level (default: medium)\n  --codex-model <model>           Codex CLI subagent model (default: gpt-5.4-mini)\n  --codex-thinking <level>        profile thinking level passed to Codex (default: medium)\n  --deepseek-api-key-env <name>   preferred DeepSeek credential for the Claude Code provider guard\n  --agent-dir <dir>               pi agent dir (default: PI_CODING_AGENT_DIR or ~/.pi/agent)\n  --run-root <dir>                temp run root\n  --timeout-ms <ms>               pi process timeout (default: 180000)\n  --keep                          keep temp run root and temporary profile\n`);
 }
 
 function ensureDir(dir) {
@@ -157,50 +166,55 @@ async function main() {
   const profileName = `zz-e2e-codex-${Date.now()}`;
   const subagentsDir = path.join(options.agentDir, "subagents");
   const profilePath = path.join(subagentsDir, `${profileName}.md`);
-  ensureDir(options.runRoot);
-  ensureDir(subagentsDir);
-  const fixture = writeFixture(options.runRoot);
-  const sessionDir = path.join(options.runRoot, "sessions");
-  ensureDir(sessionDir);
-
-  const profile = `---\ndescription: E2E Codex CLI smoke profile.\nbackend: codex\nmodel: ${options.codexModel}\nthinking: ${options.codexThinking}\n---\n\nYou are a Codex CLI subagent used by pi-flow E2E. Use the repository files to answer exactly what was asked. Do not edit files.\n`;
-  writeFileSync(profilePath, profile, "utf8");
-
-  const promptPath = path.join(options.runRoot, "prompt.md");
-  const expected = "CODEX_SUBAGENT_OK:gpt-5.4-mini-medium";
-  writeFileSync(promptPath, `You are testing pi-flow Codex CLI backend.\n\nYou MUST call the Agent tool exactly once with subagent_type \"${profileName}\".\nUse description \"Codex CLI smoke\".\nThe subagent prompt must be:\n\nRead e2e-target.txt in the current working directory and reply with exactly this format and nothing else: CODEX_SUBAGENT_OK:<file content without surrounding whitespace>\n\nAfter the Agent result returns, reply with the subagent's exact final token line.\nExpected token line: ${expected}\n`, "utf8");
-
-  const command = [
-    "pi",
-    "-p",
-    "--mode", "json",
-    "--model", options.rootModel,
-    "--thinking", options.rootThinking,
-    "--session-dir", sessionDir,
-    "--no-extensions",
-    "--extension", extensionPath,
-    "--no-skills",
-    "--no-prompt-templates",
-    "--no-themes",
-    "--no-context-files",
-    "--tools", "Agent",
-    "--approve",
-    `@${promptPath}`,
-  ];
-
-  console.log(`Running: ${command.join(" ")}`);
-  console.log(`Fixture: ${fixture}`);
-  console.log(`Session dir: ${sessionDir}`);
-  console.log(`Profile: ${profilePath}`);
-  console.log(`Codex profile model/thinking: ${options.codexModel}/${options.codexThinking}`);
-  console.log(`Root pi model/thinking: ${options.rootModel}/${options.rootThinking}`);
-
   let run;
   try {
+    ensureDir(options.runRoot);
+    const e2eEnv = prepareDeepseekClaudeE2EEnv(process.env, {
+      apiKeyEnv: options.deepseekApiKeyEnv,
+      runtimeDir: path.join(options.runRoot, "claude-runtime"),
+    });
+    ensureDir(subagentsDir);
+    const fixture = writeFixture(options.runRoot);
+    const sessionDir = path.join(options.runRoot, "sessions");
+    ensureDir(sessionDir);
+
+    const profile = `---\ndescription: E2E Codex CLI smoke profile.\nbackend: codex\nmodel: ${options.codexModel}\nthinking: ${options.codexThinking}\n---\n\nYou are a Codex CLI subagent used by pi-flow E2E. Use the repository files to answer exactly what was asked. Do not edit files.\n`;
+    writeFileSync(profilePath, profile, "utf8");
+
+    const promptPath = path.join(options.runRoot, "prompt.md");
+    const expected = "CODEX_SUBAGENT_OK:gpt-5.4-mini-medium";
+    writeFileSync(promptPath, `You are testing pi-flow Codex CLI backend.\n\nYou MUST call the Agent tool exactly once with subagent_type \"${profileName}\".\nUse description \"Codex CLI smoke\".\nThe subagent prompt must be:\n\nRead e2e-target.txt in the current working directory and reply with exactly this format and nothing else: CODEX_SUBAGENT_OK:<file content without surrounding whitespace>\n\nAfter the Agent result returns, reply with the subagent's exact final token line.\nExpected token line: ${expected}\n`, "utf8");
+
+    const command = [
+      "pi",
+      "-p",
+      "--mode", "json",
+      "--model", options.rootModel,
+      "--thinking", options.rootThinking,
+      "--session-dir", sessionDir,
+      "--no-extensions",
+      "--extension", extensionPath,
+      "--no-skills",
+      "--no-prompt-templates",
+      "--no-themes",
+      "--no-context-files",
+      "--tools", "Agent",
+      "--approve",
+      `@${promptPath}`,
+    ];
+
+    console.log(`Running: ${command.join(" ")}`);
+    console.log(`Fixture: ${fixture}`);
+    console.log(`Session dir: ${sessionDir}`);
+    console.log(`Profile: ${profilePath}`);
+    console.log(`Codex profile model/thinking: ${options.codexModel}/${options.codexThinking}`);
+    console.log(`Claude Code provider guard: DeepSeek (${DEEPSEEK_ANTHROPIC_BASE_URL})`);
+    console.log(`Root pi model/thinking: ${options.rootModel}/${options.rootThinking}`);
+
     run = await runPi({
       command,
       cwd: fixture,
-      env: { ...process.env, PI_CODING_AGENT_DIR: options.agentDir },
+      env: { ...e2eEnv, PI_CODING_AGENT_DIR: options.agentDir },
       timeoutMs: options.timeoutMs,
     });
 

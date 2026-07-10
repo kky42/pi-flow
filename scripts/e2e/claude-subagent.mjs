@@ -8,7 +8,7 @@
 //
 // Usage:
 //   node scripts/e2e/claude-subagent.mjs
-//   node scripts/e2e/claude-subagent.mjs --root-model openai/gpt-5.4-mini --root-thinking medium --claude-model haiku --claude-thinking medium --keep
+//   node scripts/e2e/claude-subagent.mjs --root-model deepseek/deepseek-v4-flash --root-thinking high --claude-model haiku --claude-thinking medium --keep
 
 import { spawn, spawnSync } from "node:child_process";
 import {
@@ -25,16 +25,24 @@ import { homedir, tmpdir } from "node:os";
 import path from "node:path";
 import process from "node:process";
 import { fileURLToPath } from "node:url";
+import {
+  DEEPSEEK_ANTHROPIC_BASE_URL,
+  loadDotEnv,
+  prepareDeepseekClaudeE2EEnv,
+} from "./lib/deepseek-claude-env.mjs";
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..");
 const extensionPath = path.join(repoRoot, "index.ts");
 
+loadDotEnv(path.join(repoRoot, ".env"));
+
 function parseArgs(argv) {
   const options = {
-    rootModel: "openai/gpt-5.4-mini",
-    rootThinking: "medium",
+    rootModel: "deepseek/deepseek-v4-flash",
+    rootThinking: "high",
     claudeModel: "haiku",
     claudeThinking: "medium",
+    deepseekApiKeyEnv: "DEEPSEEK_API_KEY",
     agentDir: process.env.PI_CODING_AGENT_DIR || path.join(homedir(), ".pi", "agent"),
     runRoot: path.join(tmpdir(), `pi-claude-subagent-e2e-${Date.now()}`),
     keep: false,
@@ -52,6 +60,7 @@ function parseArgs(argv) {
     else if (arg === "--root-thinking") options.rootThinking = value();
     else if (arg === "--claude-model") options.claudeModel = value();
     else if (arg === "--claude-thinking") options.claudeThinking = value();
+    else if (arg === "--deepseek-api-key-env") options.deepseekApiKeyEnv = value();
     else if (arg === "--agent-dir") options.agentDir = path.resolve(value());
     else if (arg === "--run-root") options.runRoot = path.resolve(value());
     else if (arg === "--timeout-ms") options.timeoutMs = Number(value());
@@ -63,7 +72,7 @@ function parseArgs(argv) {
 }
 
 function printHelp() {
-  console.log(`Usage: node scripts/e2e/claude-subagent.mjs [options]\n\nOptions:\n  --root-model <provider/model>   pi root model (default: openai/gpt-5.4-mini)\n  --root-thinking <level>         pi root thinking level (default: medium)\n  --claude-model <model>          Claude Code subagent model (default: haiku)\n  --claude-thinking <level>       profile thinking level passed to Claude Code (default: medium)\n  --agent-dir <dir>               pi agent dir (default: PI_CODING_AGENT_DIR or ~/.pi/agent)\n  --run-root <dir>                temp run root\n  --timeout-ms <ms>               pi process timeout (default: 240000)\n  --keep                          keep temp run root and temporary profile\n`);
+  console.log(`Usage: node scripts/e2e/claude-subagent.mjs [options]\n\nOptions:\n  --root-model <provider/model>   pi root model (default: deepseek/deepseek-v4-flash)\n  --root-thinking <level>         pi root thinking level (default: high)\n  --claude-model <model>          Claude Code alias mapped to DeepSeek (default: haiku)\n  --claude-thinking <level>       profile thinking level passed to Claude Code (default: medium)\n  --deepseek-api-key-env <name>   preferred DeepSeek credential env var (fallback: DEEPSEEK_API_KEY, DEEPSEEK_API_TOKEN)\n  --agent-dir <dir>               pi agent dir (default: PI_CODING_AGENT_DIR or ~/.pi/agent)\n  --run-root <dir>                temp run root\n  --timeout-ms <ms>               pi process timeout (default: 240000)\n  --keep                          keep temp run root and temporary profile\n`);
 }
 
 function ensureDir(dir) {
@@ -157,49 +166,54 @@ async function main() {
   const profileName = `zz-e2e-claude-${Date.now()}`;
   const subagentsDir = path.join(options.agentDir, "subagents");
   const profilePath = path.join(subagentsDir, `${profileName}.md`);
-  ensureDir(options.runRoot);
-  ensureDir(subagentsDir);
-  const fixture = writeFixture(options.runRoot, tokenValue);
-  const sessionDir = path.join(options.runRoot, "sessions");
-  ensureDir(sessionDir);
-
-  const profile = `---\ndescription: E2E Claude Code smoke profile.\nbackend: claude\nmodel: ${options.claudeModel}\nthinking: ${options.claudeThinking}\n---\n\nYou are a Claude Code subagent used by pi-flow E2E. Use the repository files to answer exactly what was asked. Do not edit files.\n`;
-  writeFileSync(profilePath, profile, "utf8");
-
-  const promptPath = path.join(options.runRoot, "prompt.md");
-  writeFileSync(promptPath, `You are testing pi-flow Claude Code backend.\n\nYou MUST call the Agent tool exactly once with subagent_type "${profileName}".\nUse description "Claude Code smoke".\nThe subagent prompt must be:\n\nRead e2e-target.txt in the current working directory and reply with exactly this format and nothing else: CLAUDE_SUBAGENT_OK:<file content without surrounding whitespace>\n\nAfter the Agent result returns, reply with the subagent's exact final token line.\nExpected token line: ${expected}\n`, "utf8");
-
-  const command = [
-    "pi",
-    "-p",
-    "--mode", "json",
-    "--model", options.rootModel,
-    "--thinking", options.rootThinking,
-    "--session-dir", sessionDir,
-    "--no-extensions",
-    "--extension", extensionPath,
-    "--no-skills",
-    "--no-prompt-templates",
-    "--no-themes",
-    "--no-context-files",
-    "--tools", "Agent",
-    "--approve",
-    `@${promptPath}`,
-  ];
-
-  console.log(`Running: ${command.join(" ")}`);
-  console.log(`Fixture: ${fixture}`);
-  console.log(`Session dir: ${sessionDir}`);
-  console.log(`Profile: ${profilePath}`);
-  console.log(`Claude profile model/thinking: ${options.claudeModel}/${options.claudeThinking}`);
-  console.log(`Root pi model/thinking: ${options.rootModel}/${options.rootThinking}`);
-
   let run;
   try {
+    ensureDir(options.runRoot);
+    const claudeEnv = prepareDeepseekClaudeE2EEnv(process.env, {
+      apiKeyEnv: options.deepseekApiKeyEnv,
+      runtimeDir: path.join(options.runRoot, "claude-runtime"),
+    });
+    ensureDir(subagentsDir);
+    const fixture = writeFixture(options.runRoot, tokenValue);
+    const sessionDir = path.join(options.runRoot, "sessions");
+    ensureDir(sessionDir);
+
+    const profile = `---\ndescription: E2E Claude Code smoke profile.\nbackend: claude\nmodel: ${options.claudeModel}\nthinking: ${options.claudeThinking}\n---\n\nYou are a Claude Code subagent used by pi-flow E2E. Use the repository files to answer exactly what was asked. Do not edit files.\n`;
+    writeFileSync(profilePath, profile, "utf8");
+
+    const promptPath = path.join(options.runRoot, "prompt.md");
+    writeFileSync(promptPath, `You are testing pi-flow Claude Code backend.\n\nYou MUST call the Agent tool exactly once with subagent_type "${profileName}".\nUse description "Claude Code smoke".\nThe subagent prompt must be:\n\nRead e2e-target.txt in the current working directory and reply with exactly this format and nothing else: CLAUDE_SUBAGENT_OK:<file content without surrounding whitespace>\n\nAfter the Agent result returns, reply with the subagent's exact final token line.\nExpected token line: ${expected}\n`, "utf8");
+
+    const command = [
+      "pi",
+      "-p",
+      "--mode", "json",
+      "--model", options.rootModel,
+      "--thinking", options.rootThinking,
+      "--session-dir", sessionDir,
+      "--no-extensions",
+      "--extension", extensionPath,
+      "--no-skills",
+      "--no-prompt-templates",
+      "--no-themes",
+      "--no-context-files",
+      "--tools", "Agent",
+      "--approve",
+      `@${promptPath}`,
+    ];
+
+    console.log(`Running: ${command.join(" ")}`);
+    console.log(`Fixture: ${fixture}`);
+    console.log(`Session dir: ${sessionDir}`);
+    console.log(`Profile: ${profilePath}`);
+    console.log(`Claude profile model/thinking: ${options.claudeModel}/${options.claudeThinking}`);
+    console.log(`Claude Code provider: DeepSeek (${DEEPSEEK_ANTHROPIC_BASE_URL})`);
+    console.log(`Root pi model/thinking: ${options.rootModel}/${options.rootThinking}`);
+
     run = await runPi({
       command,
       cwd: fixture,
-      env: { ...process.env, PI_CODING_AGENT_DIR: options.agentDir },
+      env: { ...claudeEnv, PI_CODING_AGENT_DIR: options.agentDir },
       timeoutMs: options.timeoutMs,
     });
 

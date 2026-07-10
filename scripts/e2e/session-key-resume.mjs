@@ -24,9 +24,17 @@ import { homedir, tmpdir } from "node:os";
 import path from "node:path";
 import process from "node:process";
 import { fileURLToPath } from "node:url";
+import {
+  DEEPSEEK_ANTHROPIC_BASE_URL,
+  buildDeepseekClaudeEnv,
+  loadDotEnv,
+  prepareDeepseekClaudeE2EEnv,
+} from "./lib/deepseek-claude-env.mjs";
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..");
 const extensionPath = path.join(repoRoot, "index.ts");
+
+loadDotEnv(path.join(repoRoot, ".env"));
 const BACKENDS = ["pi", "codex", "claude"];
 
 function parseArgs(argv) {
@@ -38,6 +46,7 @@ function parseArgs(argv) {
     codexThinking: "medium",
     claudeModel: "haiku",
     claudeThinking: "medium",
+    deepseekApiKeyEnv: "DEEPSEEK_API_KEY",
     agentDir: process.env.PI_CODING_AGENT_DIR || path.join(homedir(), ".pi", "agent"),
     runRoot: undefined,
     keep: false,
@@ -58,6 +67,7 @@ function parseArgs(argv) {
     else if (arg === "--codex-thinking") options.codexThinking = value();
     else if (arg === "--claude-model") options.claudeModel = value();
     else if (arg === "--claude-thinking") options.claudeThinking = value();
+    else if (arg === "--deepseek-api-key-env") options.deepseekApiKeyEnv = value();
     else if (arg === "--agent-dir") options.agentDir = path.resolve(value());
     else if (arg === "--run-root") options.runRoot = path.resolve(value());
     else if (arg === "--timeout-ms") options.timeoutMs = Number(value());
@@ -68,14 +78,11 @@ function parseArgs(argv) {
   if (options.backend !== "all" && !BACKENDS.includes(options.backend)) {
     throw new Error(`--backend must be one of all, ${BACKENDS.join(", ")}`);
   }
-  if (!options.help && !options.runRoot) {
-    options.runRoot = mkdtempSync(path.join(tmpdir(), "pi-flow-session-key-e2e-"));
-  }
   return options;
 }
 
 function printHelp() {
-  console.log(`Usage: node scripts/e2e/session-key-resume.mjs [options]\n\nOptions:\n  --backend <all|pi|codex|claude>  backend(s) to test (default: all)\n  --root-model <provider/model>    pi root model (default: deepseek/deepseek-v4-flash)\n  --root-thinking <level>          pi root thinking level (default: high)\n  --codex-model <model>            Codex subagent model (default: gpt-5.4-mini)\n  --codex-thinking <level>         Codex subagent thinking (default: medium)\n  --claude-model <model>           Claude Code subagent model (default: haiku)\n  --claude-thinking <level>        Claude Code subagent thinking (default: medium)\n  --agent-dir <dir>                pi agent dir (default: PI_CODING_AGENT_DIR or ~/.pi/agent)\n  --run-root <dir>                 temp run root\n  --timeout-ms <ms>                per-backend pi timeout (default: 300000)\n  --keep                           keep temp run root and temporary profiles\n`);
+  console.log(`Usage: node scripts/e2e/session-key-resume.mjs [options]\n\nOptions:\n  --backend <all|pi|codex|claude>  backend(s) to test (default: all)\n  --root-model <provider/model>    pi root model (default: deepseek/deepseek-v4-flash)\n  --root-thinking <level>          pi root thinking level (default: high)\n  --codex-model <model>            Codex subagent model (default: gpt-5.4-mini)\n  --codex-thinking <level>         Codex subagent thinking (default: medium)\n  --claude-model <model>           Claude Code alias mapped to DeepSeek (default: haiku)\n  --claude-thinking <level>        Claude Code subagent thinking (default: medium)\n  --deepseek-api-key-env <name>    preferred DeepSeek credential env var (fallback: DEEPSEEK_API_KEY, DEEPSEEK_API_TOKEN)\n  --agent-dir <dir>                pi agent dir (default: PI_CODING_AGENT_DIR or ~/.pi/agent)\n  --run-root <dir>                 temp run root\n  --timeout-ms <ms>                per-backend pi timeout (default: 300000)\n  --keep                           keep temp run root and temporary profiles\n`);
 }
 
 function ensureDir(dir) {
@@ -184,43 +191,49 @@ async function runBackend(options, backend) {
   ensureDir(subagentsDir);
   const backendRoot = path.join(options.runRoot, backend);
   ensureDir(backendRoot);
+  const backendEnv = prepareDeepseekClaudeE2EEnv(process.env, {
+    apiKeyEnv: options.deepseekApiKeyEnv,
+    runtimeDir: path.join(backendRoot, "claude-runtime"),
+  });
   const { fixture, secret } = writeFixture(options.runRoot, backend);
   const expectedPrefix = `${backend.toUpperCase()}_SESSION_KEY_OK`;
   const expected = `${expectedPrefix}:${secret}`;
-  writeFileSync(profilePath, profileBody(backend, profileName, options), "utf8");
-  const promptPath = writePrompt(options.runRoot, backend, profileName, expectedPrefix);
-  const sessionDir = path.join(backendRoot, "sessions");
-  ensureDir(sessionDir);
-
-  const command = [
-    "pi",
-    "-p",
-    "--mode", "json",
-    "--model", options.rootModel,
-    "--thinking", options.rootThinking,
-    "--session-dir", sessionDir,
-    "--no-extensions",
-    "--extension", extensionPath,
-    "--no-skills",
-    "--no-prompt-templates",
-    "--no-themes",
-    "--no-context-files",
-    "--tools", "Agent",
-    "--approve",
-    `@${promptPath}`,
-  ];
-
-  console.log(`\n[${backend}] Running: ${command.join(" ")}`);
-  console.log(`[${backend}] Fixture: ${fixture}`);
-  console.log(`[${backend}] Session dir: ${sessionDir}`);
-  console.log(`[${backend}] Profile: ${profilePath}`);
-
   let run;
   try {
+    writeFileSync(profilePath, profileBody(backend, profileName, options), "utf8");
+    const promptPath = writePrompt(options.runRoot, backend, profileName, expectedPrefix);
+    const sessionDir = path.join(backendRoot, "sessions");
+    ensureDir(sessionDir);
+
+    const command = [
+      "pi",
+      "-p",
+      "--mode", "json",
+      "--model", options.rootModel,
+      "--thinking", options.rootThinking,
+      "--session-dir", sessionDir,
+      "--no-extensions",
+      "--extension", extensionPath,
+      "--no-skills",
+      "--no-prompt-templates",
+      "--no-themes",
+      "--no-context-files",
+      "--tools", "Agent",
+      "--approve",
+      `@${promptPath}`,
+    ];
+
+    console.log(`\n[${backend}] Running: ${command.join(" ")}`);
+    console.log(`[${backend}] Fixture: ${fixture}`);
+    console.log(`[${backend}] Session dir: ${sessionDir}`);
+    console.log(`[${backend}] Profile: ${profilePath}`);
+
+    console.log(`[${backend}] Claude Code provider guard: DeepSeek (${DEEPSEEK_ANTHROPIC_BASE_URL})`);
+
     run = await runPi({
       command,
       cwd: fixture,
-      env: { ...process.env, PI_CODING_AGENT_DIR: options.agentDir },
+      env: { ...backendEnv, PI_CODING_AGENT_DIR: options.agentDir },
       timeoutMs: options.timeoutMs,
     });
     const transcriptText = `${run.stdout}\n${run.stderr}\n${readAllTextUnder(sessionDir)}`;
@@ -252,8 +265,12 @@ async function main() {
     printHelp();
     return;
   }
-  ensureDir(options.runRoot);
   const backends = options.backend === "all" ? BACKENDS : [options.backend];
+  buildDeepseekClaudeEnv(process.env, { apiKeyEnv: options.deepseekApiKeyEnv });
+  if (!options.runRoot) {
+    options.runRoot = mkdtempSync(path.join(tmpdir(), "pi-flow-session-key-e2e-"));
+  }
+  ensureDir(options.runRoot);
   try {
     for (const backend of backends) {
       await runBackend(options, backend);

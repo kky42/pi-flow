@@ -37,14 +37,23 @@ import { homedir, tmpdir } from "node:os";
 import path from "node:path";
 import process from "node:process";
 import { fileURLToPath } from "node:url";
+import {
+  DEEPSEEK_ANTHROPIC_BASE_URL,
+  buildDeepseekClaudeEnv,
+  loadDotEnv,
+  prepareDeepseekClaudeE2EEnv,
+} from "./lib/deepseek-claude-env.mjs";
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..");
 const extensionPath = path.join(repoRoot, "index.ts");
+
+loadDotEnv(path.join(repoRoot, ".env"));
 
 function parseArgs(argv) {
   const options = {
     model: "deepseek/deepseek-v4-flash",
     thinking: "high",
+    deepseekApiKeyEnv: "DEEPSEEK_API_KEY",
     sessionRoot: path.join(tmpdir(), `pi-wf-features-${Date.now()}`),
     agentDir: process.env.PI_CODING_AGENT_DIR || path.join(homedir(), ".pi", "agent"),
     keep: false,
@@ -59,6 +68,7 @@ function parseArgs(argv) {
     };
     if (arg === "--model") options.model = value();
     else if (arg === "--thinking") options.thinking = value();
+    else if (arg === "--deepseek-api-key-env") options.deepseekApiKeyEnv = value();
     else if (arg === "--session-root") options.sessionRoot = path.resolve(value());
     else if (arg === "--agent-dir") options.agentDir = path.resolve(value());
     else if (arg === "--keep") options.keep = true;
@@ -247,7 +257,7 @@ const DISCOVERABILITY_PROMPT = [
 // clean FAIL on "model invoked the workflow tool" rather than a hang).
 const DEFAULT_PI_TIMEOUT_MS = 8 * 60 * 1000;
 
-function runPi({ model, thinking, agentDir, cwd, sessionDir, sessionId, prompt, extension, timeoutMs = DEFAULT_PI_TIMEOUT_MS }) {
+function runPi({ model, thinking, deepseekApiKeyEnv, agentDir, cwd, sessionDir, sessionId, prompt, extension, timeoutMs = DEFAULT_PI_TIMEOUT_MS }) {
   ensureDir(sessionDir);
   const promptPath = path.join(sessionDir, "prompt.md");
   writeFileSync(promptPath, `${prompt}\n`);
@@ -275,10 +285,14 @@ function runPi({ model, thinking, agentDir, cwd, sessionDir, sessionId, prompt, 
   return new Promise((resolve) => {
     const out = createWriteStream(stdoutPath, { flags: "a" });
     const err = createWriteStream(stderrPath, { flags: "a" });
+    const e2eEnv = prepareDeepseekClaudeE2EEnv(process.env, {
+      apiKeyEnv: deepseekApiKeyEnv,
+      runtimeDir: path.join(sessionDir, "claude-runtime"),
+    });
     const child = spawn("pi", args, {
       cwd,
       stdio: ["ignore", "pipe", "pipe"],
-      env: { ...process.env, PI_CODING_AGENT_DIR: agentDir },
+      env: { ...e2eEnv, PI_CODING_AGENT_DIR: agentDir },
     });
     let timedOut = false;
     let killTimer;
@@ -296,6 +310,7 @@ function runPi({ model, thinking, agentDir, cwd, sessionDir, sessionId, prompt, 
       if (killTimer) clearTimeout(killTimer);
       out.end();
       err.end();
+      rmSync(path.join(sessionDir, "claude-runtime"), { recursive: true, force: true });
       if (timedOut) console.log(`    ! pi session timed out after ${Math.round(timeoutMs / 1000)}s (${sessionId})`);
       resolve({ exitCode, stdoutPath, stderrPath, timedOut });
     });
@@ -847,13 +862,19 @@ function printScenario(result) {
 async function main() {
   const options = parseArgs(process.argv.slice(2));
   if (options.help) {
-    console.log("node scripts/e2e/workflow-features.mjs --model <id> [--thinking high] [--session-root <dir>] [--agent-dir <dir>] [--keep]");
+    console.log("node scripts/e2e/workflow-features.mjs --model <id> [--thinking high] [--deepseek-api-key-env <name>] [--session-root <dir>] [--agent-dir <dir>] [--keep]");
     return;
   }
+  buildDeepseekClaudeEnv(process.env, { apiKeyEnv: options.deepseekApiKeyEnv });
   ensureDir(options.sessionRoot);
   const fixture = createFixture(options.sessionRoot);
   const ctx = {
-    run: { model: options.model, thinking: options.thinking, agentDir: options.agentDir },
+    run: {
+      model: options.model,
+      thinking: options.thinking,
+      deepseekApiKeyEnv: options.deepseekApiKeyEnv,
+      agentDir: options.agentDir,
+    },
     sessionRoot: options.sessionRoot,
     agentDir: options.agentDir,
     fixture,
@@ -862,6 +883,7 @@ async function main() {
 
   console.log(`workflow-features e2e`);
   console.log(`  model:       ${options.model} (thinking=${options.thinking})`);
+  console.log(`  Claude Code: DeepSeek (${DEEPSEEK_ANTHROPIC_BASE_URL})`);
   console.log(`  extension:   ${extensionPath}`);
   console.log(`  fixture:     ${fixture}`);
   console.log(`  sessionRoot: ${options.sessionRoot}`);

@@ -19,6 +19,7 @@
     "scripts",
     "README.md",
     "LICENSE",
+    ".env.example",
     "assets"
   ],
   "keywords": [

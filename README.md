@@ -188,7 +188,15 @@ Fast local checks:
 npm run check
 ```
 
-Real-model E2E checks are intentionally manual because they use live Pi/Codex/Claude backends. When changing session continuation, run:
+Real-model E2E checks are intentionally manual because they use live Pi/Codex/Claude backends. Every E2E driver installs a provider guard so any Claude Code process—including one selected unexpectedly through a custom profile—uses DeepSeek's Anthropic-compatible endpoint with isolated Claude settings. Anthropic login is never used. Set `DEEPSEEK_API_KEY` or `DEEPSEEK_API_TOKEN` in the shell or repo `.env` (see `.env.example`). Use `--deepseek-api-key-env <name>` for a custom credential variable.
+
+```bash
+npm run e2e:compare-claude
+npm run e2e:claude-subagent
+npm run e2e:session-key-resume -- --backend claude --timeout-ms 300000
+```
+
+When changing session continuation across all backends, run:
 
 ```bash
 npm run e2e:session-key-resume -- --backend all --timeout-ms 300000

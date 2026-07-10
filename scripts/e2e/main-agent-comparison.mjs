@@ -14,29 +14,15 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import process from "node:process";
 import { fileURLToPath } from "node:url";
+import {
+  DEEPSEEK_ANTHROPIC_BASE_URL,
+  DEEPSEEK_CLAUDE_MODELS,
+  buildDeepseekClaudeEnv,
+  loadDotEnv,
+  prepareDeepseekClaudeE2EEnv,
+} from "./lib/deepseek-claude-env.mjs";
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..");
-
-function loadDotEnv(filePath) {
-  if (!existsSync(filePath)) return;
-  const lines = readFileSync(filePath, "utf8").split("\n");
-  for (const line of lines) {
-    const trimmed = line.trim();
-    if (!trimmed || trimmed.startsWith("#")) continue;
-    const separator = trimmed.indexOf("=");
-    if (separator === -1) continue;
-    const key = trimmed.slice(0, separator).trim();
-    let value = trimmed.slice(separator + 1).trim();
-    if (!key || process.env[key] !== undefined) continue;
-    if (
-      (value.startsWith('"') && value.endsWith('"')) ||
-      (value.startsWith("'") && value.endsWith("'"))
-    ) {
-      value = value.slice(1, -1);
-    }
-    process.env[key] = value;
-  }
-}
 
 loadDotEnv(path.join(repoRoot, ".env"));
 
@@ -217,8 +203,8 @@ Options:
   --large-name <name>            local directory name for the large bucket
   --huge-repo <url>              fixture repo for the huge bucket
   --huge-name <name>             local directory name for the huge bucket
-  --deepseek-api-key-env <name>  env var used for pi and Claude DeepSeek auth
-  --with-claude                  also run Claude Code comparison
+  --deepseek-api-key-env <name>  preferred DeepSeek credential env var (fallback: DEEPSEEK_API_KEY, DEEPSEEK_API_TOKEN)
+  --with-claude                  also run Claude Code comparison through DeepSeek
   --strict-claude                fail if a Claude Code scenario is incomplete or unexpected
   --strict-observed              fail incomplete observed scenarios too
   --claude-model <id>            Claude Code model alias/id (default: haiku)
@@ -252,41 +238,25 @@ function getTrackedFileCount(repoDir) {
   return files.split("\n").filter(Boolean).length;
 }
 
-function getDeepseekApiKey(options) {
-  return process.env[options.deepseekApiKeyEnv] || process.env.ANTHROPIC_AUTH_TOKEN || process.env.DEEPSEEK_API_KEY;
-}
-
 function buildPiEnv(options, sessionDir) {
-  const env = { ...process.env };
-  const key = getDeepseekApiKey(options);
-  if (key) {
-    const agentDir = path.join(sessionDir, "agent");
-    ensureDirectory(agentDir);
-    env.PI_CODING_AGENT_DIR = agentDir;
-    env.DEEPSEEK_API_KEY = key;
-    writeFileSync(
-      path.join(agentDir, "auth.json"),
-      `${JSON.stringify({ deepseek: { type: "api_key", key } }, null, 2)}\n`,
-    );
-  }
+  const env = prepareDeepseekClaudeE2EEnv(process.env, {
+    apiKeyEnv: options.deepseekApiKeyEnv,
+    runtimeDir: path.join(sessionDir, "claude-runtime"),
+  });
+  const agentDir = path.join(sessionDir, "agent");
+  ensureDirectory(agentDir);
+  env.PI_CODING_AGENT_DIR = agentDir;
   return env;
 }
 
-function buildClaudeEnv(options) {
-  const env = { ...process.env };
-  const key = getDeepseekApiKey(options);
-  if (key) {
-    env.ANTHROPIC_BASE_URL = "https://api.deepseek.com/anthropic";
-    env.ANTHROPIC_AUTH_TOKEN = key;
-    env.ANTHROPIC_MODEL = "deepseek-v4-pro[1m]";
-    env.ANTHROPIC_DEFAULT_OPUS_MODEL = "deepseek-v4-pro[1m]";
-    env.ANTHROPIC_DEFAULT_SONNET_MODEL = "deepseek-v4-pro[1m]";
-    env.ANTHROPIC_DEFAULT_HAIKU_MODEL = "deepseek-v4-flash[1m]";
+function buildClaudeEnv(options, runtimeDir) {
+  if (!runtimeDir) {
+    return buildDeepseekClaudeEnv(process.env, { apiKeyEnv: options.deepseekApiKeyEnv });
   }
-  env.CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC = "1";
-  env.CLAUDE_CODE_ATTRIBUTION_HEADER = "0";
-  env.CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS = "1";
-  return env;
+  return prepareDeepseekClaudeE2EEnv(process.env, {
+    apiKeyEnv: options.deepseekApiKeyEnv,
+    runtimeDir,
+  });
 }
 
 async function cloneRepo({ url, name, baseDir, timeoutMs }) {
@@ -662,11 +632,13 @@ function analyzeClaudeTrace(filePath) {
   const taskStarts = [];
   const resultErrors = [];
   const finalTexts = [];
+  const models = [];
   const subagentToolNames = new Set(CLAUDE_ALWAYS_SUBAGENT_TOOL_NAMES);
 
   for (const record of readJsonlRecords(filePath)) {
     if (record.type === "system" && record.subtype === "init") {
       addClaudeAgentNames(subagentToolNames, record.agents);
+      if (typeof record.model === "string") models.push(record.model);
     }
     if (record.type === "system" && record.subtype === "task_started") {
       taskStarts.push(record);
@@ -704,6 +676,7 @@ function analyzeClaudeTrace(filePath) {
     taskManagementToolCalls,
     taskStarts: taskStarts.length,
     resultErrors,
+    models: [...new Set(models)],
     agentCalls,
     rootToolCalls,
     readCalls: toolCalls.Read ?? 0,
@@ -778,6 +751,7 @@ async function runPiScenario(options, fixtures, scenario, repeatIndex) {
     trace,
   };
   writeFileSync(path.join(sessionDir, "result.json"), `${JSON.stringify(result, null, 2)}\n`);
+  rmSync(path.join(sessionDir, "claude-runtime"), { recursive: true, force: true });
   return result;
 }
 
@@ -792,6 +766,7 @@ async function runClaudeScenario(options, fixtures, scenario, repeatIndex) {
     "-p",
     "--output-format",
     "stream-json",
+    "--verbose",
     "--effort",
     options.claudeEffort,
     "--permission-mode",
@@ -815,7 +790,7 @@ async function runClaudeScenario(options, fixtures, scenario, repeatIndex) {
     stdoutPath,
     stderrPath,
     timeoutMs: options.claudeTimeoutMs,
-    env: buildClaudeEnv(options),
+    env: buildClaudeEnv(options, path.join(sessionDir, "claude-runtime")),
     stopOnAgentInvocation: !scenario.expectedBehavior || scenario.expectedBehavior === "delegate",
     agentInvocationDetector: createClaudeSubagentInvocationDetector(),
     maxToolCalls: options.maxToolCalls,
@@ -824,7 +799,9 @@ async function runClaudeScenario(options, fixtures, scenario, repeatIndex) {
   const trace = analyzeClaudeTrace(stdoutPath);
   const completed = command.exitCode === 0 && !command.timedOut && trace.resultErrors.length === 0;
   const completedEnough = completed || command.stoppedOnAgentInvocation || command.stoppedOnToolLimit;
-  const pass = completedEnough && (!scenario.expectedBehavior || trace.behavior === scenario.expectedBehavior);
+  const expectedModel = DEEPSEEK_CLAUDE_MODELS[options.claudeModel] ?? options.claudeModel;
+  const deepseekModelObserved = trace.models.includes(expectedModel);
+  const pass = completedEnough && deepseekModelObserved && (!scenario.expectedBehavior || trace.behavior === scenario.expectedBehavior);
 
   const result = {
     kind: "claude",
@@ -836,6 +813,8 @@ async function runClaudeScenario(options, fixtures, scenario, repeatIndex) {
     required: Boolean(scenario.expectedBehavior),
     pass,
     completed,
+    expectedModel,
+    deepseekModelObserved,
     command,
     sessionDir,
     workCwd,
@@ -844,15 +823,17 @@ async function runClaudeScenario(options, fixtures, scenario, repeatIndex) {
     trace,
   };
   writeFileSync(path.join(sessionDir, "result.json"), `${JSON.stringify(result, null, 2)}\n`);
+  rmSync(path.join(sessionDir, "claude-runtime"), { recursive: true, force: true });
   return result;
 }
 
 function formatResult(result, options = {}) {
   let status = result.pass ? "PASS" : "FAIL";
-  if ((result.kind === "pi" || result.kind === "claude") && !result.required && !result.pass) {
+  const providerInvariantFailed = result.kind === "claude" && !result.deepseekModelObserved;
+  if (!providerInvariantFailed && (result.kind === "pi" || result.kind === "claude") && !result.required && !result.pass) {
     status = "INCONCLUSIVE";
   }
-  if (result.kind === "claude" && !options.strictClaude && !result.required && !result.pass) {
+  if (!providerInvariantFailed && result.kind === "claude" && !options.strictClaude && !result.required && !result.pass) {
     status = "INCONCLUSIVE";
   }
   const expected = result.expectedBehavior ?? "observe";
@@ -875,6 +856,7 @@ function formatResult(result, options = {}) {
     if (Object.keys(result.trace.subagentToolCalls ?? {}).length > 0) {
       parts.push(`subagentTools=${JSON.stringify(result.trace.subagentToolCalls)}`);
     }
+    parts.push(`model=${result.trace.models.join(",") || "none"}`);
     parts.push(`completed=${result.completed}`);
     if (result.command.timedOut) parts.push("timeout=true");
     if (result.trace.resultErrors.length) parts.push(`errors=${result.trace.resultErrors.join(",")}`);
@@ -905,6 +887,9 @@ async function main() {
     printHelp();
     return;
   }
+
+  buildClaudeEnv(options);
+  console.log(`Claude Code provider guard: DeepSeek (${DEEPSEEK_ANTHROPIC_BASE_URL})`);
 
   ensureDirectory(options.sessionRoot);
   const fixtures = await prepareFixtures(options);
@@ -952,6 +937,7 @@ async function main() {
   const failed = results.filter((result) => {
     if (result.kind === "pi") return !result.pass && (result.required || options.strictObserved);
     if (result.kind === "claude") {
+      if (!result.deepseekModelObserved) return true;
       return options.strictClaude && !result.pass && (result.required || options.strictObserved);
     }
     return false;
