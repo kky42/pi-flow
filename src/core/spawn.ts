@@ -31,6 +31,18 @@ export const CHILD_EXCLUDED_TOOLS: readonly string[] = ["Agent", "workflow"];
 
 const PI_SUBAGENT_SESSION_DIR_NAME = "subagent-sessions";
 
+export function incrementalPiUsage(current: SubagentUsage, baseline: SubagentUsage): SubagentUsage {
+  return {
+    input: Math.max(0, current.input - baseline.input),
+    output: Math.max(0, current.output - baseline.output),
+    cacheRead: Math.max(0, current.cacheRead - baseline.cacheRead),
+    cacheWrite: Math.max(0, current.cacheWrite - baseline.cacheWrite),
+    cost: Math.max(0, current.cost - baseline.cost),
+    costKnown: current.costKnown,
+    latestCacheHitRate: current.latestCacheHitRate,
+  };
+}
+
 interface PiSubagentSessionResolution {
   sessionManager: SessionManager;
   sessionId: string | undefined;
@@ -261,6 +273,11 @@ async function spawnSubagentRuntime(params: SpawnSubagentParams): Promise<AgentT
     ...(toolAllowList !== undefined ? { tools: toolAllowList } : {}),
   });
 
+  // Resumed Pi sessions expose lifetime stats. Keep the pre-prompt totals so
+  // this invocation reports only its incremental usage to workflow aggregation.
+  const usageBaseline = getSubagentUsage(session);
+  const getCallUsage = () => incrementalPiUsage(getSubagentUsage(session), usageBaseline);
+
   let abortHandler: (() => void) | undefined;
   if (signal) {
     abortHandler = () => {
@@ -277,7 +294,7 @@ async function spawnSubagentRuntime(params: SpawnSubagentParams): Promise<AgentT
       emitter.emitSoon();
     }
     if (event.type === "message_end" && event.message.role === "assistant") {
-      const usage = getSubagentUsage(session);
+      const usage = getCallUsage();
       if (progress) {
         progress.usage = usage;
       }
@@ -313,7 +330,7 @@ async function spawnSubagentRuntime(params: SpawnSubagentParams): Promise<AgentT
       );
     }
     const result = extractFinalAssistantText(session.messages) || "(no final text output)";
-    const usage = getSubagentUsage(session);
+    const usage = getCallUsage();
     onUsage(usage);
     if (progress) {
       progress.status = "done";
@@ -334,7 +351,7 @@ async function spawnSubagentRuntime(params: SpawnSubagentParams): Promise<AgentT
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     const status = signal?.aborted ? "aborted" : "error";
-    const usage = getSubagentUsage(session);
+    const usage = getCallUsage();
     onUsage(usage);
     if (progress) {
       progress.status = status;

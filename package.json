@@ -1,6 +1,6 @@
 {
   "name": "@kky42/pi-flow",
-  "version": "2.0.1",
+  "version": "2.1.0",
   "description": "Multi-backend subagents and dynamic workflow orchestration for pi.",
   "type": "module",
   "main": "./index.ts",
@@ -9,6 +9,10 @@
     "./runtime": {
       "types": "./dist/runtime.d.ts",
       "default": "./dist/runtime.js"
+    },
+    "./headless": {
+      "types": "./dist/headless.d.ts",
+      "default": "./dist/headless.js"
     },
     "./package.json": "./package.json"
   },

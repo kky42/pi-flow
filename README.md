@@ -66,6 +66,31 @@ Review this PR from three independent angles—correctness, security, and test c
 
 Pi decides how to invoke `Agent` or `workflow`, shows live progress, and returns the combined result in the same conversation.
 
+## Headless execution
+
+Schedulers and services can execute the same profile-aware workflow path without creating a Pi extension or TUI:
+
+```ts
+import { executeWorkflow } from "@kky42/pi-flow/headless";
+
+const run = await executeWorkflow({
+  script,
+  cwd: process.cwd(),
+  args: { topic: "auth" },
+  signal,
+  maxConcurrentSubagents: 4,
+  subagentTimeoutMs: 30 * 60_000,
+  allowedBackends: ["pi", "codex"],
+  onLog: console.log,
+  onPhase: (title) => console.log("phase", title),
+  onUsage: (usage) => console.log("cumulative usage", usage),
+});
+```
+
+The headless API loads the same profiles and preserves profile backend, model, thinking, tools, role prompt, `session_key`, structured output, and spawn behavior used by the interactive workflow tool. `allowedBackends` is an optional execution policy. Workflow scripts are trusted code, not a security sandbox.
+
+The lower-level `@kky42/pi-flow/runtime` export remains available for consumers that provide their own agent runner.
+
 ## Why pi-flow?
 
 - **Use the right model for each lane.** A single task can combine different models, harnesses, prompts, and toolsets.

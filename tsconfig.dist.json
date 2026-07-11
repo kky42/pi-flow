@@ -8,5 +8,5 @@
     "moduleResolution": "NodeNext",
     "rewriteRelativeImportExtensions": true
   },
-  "include": ["runtime.ts"]
+  "include": ["runtime.ts", "headless.ts"]
 }

@@ -40,6 +40,12 @@
 - The throttled progress-emit + heartbeat machinery lives ONCE in `progress.ts` as `createProgressEmitter` and is shared by all three backends (`spawn.ts` pi, `codex.ts`, `claude.ts`); do not re-inline per-backend copies. The queued→running and abort emit timing is owned by that emitter.
 - External-CLI backends bound parent-side child output via `createBoundedBuffer` (`stream.ts`): stderr is capped (`MAX_STDERR_CHARS`) and a single newline-free stdout line over `MAX_STDOUT_LINE_CHARS` aborts/fails the run clearly, so one runaway subagent cannot OOM the host pi process. A clean exit (code 0) with usable final text but no recognized terminal event is accepted rather than failed, so a CLI stream-format change does not turn good runs into failures.
 
+## Headless workflow execution
+
+- `@kky42/pi-flow/runtime` remains the lightweight plain-Node orchestration engine: callers provide `runAgent`, and the export must not gain runtime dependencies on Pi peer packages.
+- `@kky42/pi-flow/headless` is the batteries-included programmatic executor for schedulers and services. It loads current profiles and reuses the same canonical profile/model/thinking/backend/tools/session-key/structured-output spawn path as the interactive `workflow` tool, without requiring an `ExtensionContext` or TUI.
+- The shared profile-aware runner lives in `src/workflow/agent-runner.ts`; do not reimplement that behavior in headless consumers. Headless callers may restrict allowed backends as an execution policy and receive cumulative usage callbacks.
+
 ## Saved workflows (v3)
 
 - The `workflow` tool now accepts exactly one source: inline `script` for ad-hoc orchestration, `name` for a saved workflow, or `scriptPath` for a persisted script. `args` is still exposed to the script as the `args` global.

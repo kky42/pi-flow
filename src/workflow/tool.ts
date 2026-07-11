@@ -11,25 +11,13 @@ import { Container, Text } from "@earendil-works/pi-tui";
 import type { ConcurrencyLimiter } from "../core/concurrency.ts";
 import { isActiveSubagentStatus, isCompletedSubagentStatus, renderSubagentNode } from "../core/subagent-render.ts";
 import { SPINNER_INTERVAL_MS } from "../core/spinner.ts";
-import {
-  assertBindingMatchesProfile,
-  SessionKeyLocks,
-  type SessionKeyBinding,
-} from "../core/session-key.ts";
-import { filterProfilesForModelRegistry, resolveProfileModel, usesPiBackend } from "../core/model.ts";
-import { CHILD_EXCLUDED_TOOLS, spawnSubagent } from "../core/spawn.ts";
+import { filterProfilesForModelRegistry } from "../core/model.ts";
 import { getSubagentProfiles } from "../profiles.ts";
 import { WORKFLOW_PROMPT_GUIDELINES, WORKFLOW_PROMPT_SNIPPET } from "../prompts.ts";
 import type { SubagentToolDetails, SubagentUsage, WorkflowAgentSnapshot, WorkflowToolDetails } from "../types.ts";
 import { isWorkflowAbortError, runWorkflow } from "./runtime.ts";
 import { prepareWorkflowToolSource, workflowToolParameters } from "./source.ts";
-import type { WorkflowAgentRunner } from "./types.ts";
-import {
-  createStructuredOutputTool,
-  STRUCTURED_OUTPUT_CONTRACT,
-  WORKFLOW_PLAIN_TEXT_OUTPUT_NOTE,
-  type StructuredOutputCapture,
-} from "./structured-output.ts";
+import { createWorkflowAgentRunner } from "./agent-runner.ts";
 
 export interface CreateWorkflowToolOptions {
   getLimiter: () => ConcurrencyLimiter;
@@ -137,103 +125,21 @@ export function createWorkflowTool(
       };
       const emit = () => onUpdate?.(workflowResult(`Workflow "${metaName}" running.`, cloneSnapshot(snapshot)));
 
-      let agentSeq = 0;
-      const sessionBindings = new Map<string, SessionKeyBinding>();
-      const sessionKeyLocks = new SessionKeyLocks();
-      const runAgent: WorkflowAgentRunner = async (call, agentSignal) => {
-        const profile = profiles.get(call.subagentType);
-        if (!profile) {
-          throw new Error(
-            `Unknown subagent_type "${call.subagentType}". Available agents: ${[...profiles.keys()].join(", ")}.`,
-          );
-        }
-        const model = resolveProfileModel(profile, ctx);
-        if (usesPiBackend(profile) && !model) {
-          throw new Error(profile.model ? `Profile model not found: ${profile.model}` : "No model is selected");
-        }
-
-        // Structured output: native pi subagents get an injected schema-validated
-        // structured_output tool. External CLI subagents use their native
-        // final-response schema validation instead.
-        let capture: StructuredOutputCapture | undefined;
-        let customTools: ToolDefinition[] | undefined;
-        let appendInstructions: string;
-        const externalOutputSchema = !usesPiBackend(profile) && call.schema !== undefined && call.schema !== null;
-        if (call.schema !== undefined && call.schema !== null && !externalOutputSchema) {
-          capture = { value: undefined, called: false, count: 0, duplicateCall: false };
-          customTools = [createStructuredOutputTool(call.schema, capture)];
-          appendInstructions = STRUCTURED_OUTPUT_CONTRACT;
-        } else if (externalOutputSchema) {
-          appendInstructions = [
-            WORKFLOW_PLAIN_TEXT_OUTPUT_NOTE,
-            "Structured output contract:",
-            "- Return only JSON matching the schema supplied to the CLI. No markdown fences or prose.",
-          ].join("\n");
-        } else {
-          appendInstructions = WORKFLOW_PLAIN_TEXT_OUTPUT_NOTE;
-        }
-
-        const childIndex = call.index ?? ++agentSeq;
-        const childId = `${toolCallId}:agent:${childIndex}`;
-        const binding = call.sessionKey ? sessionBindings.get(call.sessionKey) : undefined;
-        if (binding) {
-          assertBindingMatchesProfile(binding, { subagentType: call.subagentType, backend: profile.backend });
-        }
-        call.backend = profile.backend;
-        call.sessionId = binding?.sessionId;
-        const result = await spawnSubagent({
-          toolCallId: childId,
-          description: call.label,
-          prompt: call.prompt,
-          profile,
-          model,
-          thinkingLevel: profile.thinking ?? options.getThinkingLevel(),
-          ctx,
-          signal: agentSignal,
-          timeoutMs: options.getSubagentTimeoutMs(),
-          progressEnabled: true,
-          onProgress: (partial) => {
-            const details = partial.details as SubagentToolDetails;
-            const agent = snapshot.agents.find((item) => item.index === childIndex);
-            if (agent && details.progress) {
-              agent.startedAt = details.progress.startedAt;
-              agent.endedAt = details.progress.endedAt;
-              agent.activity = [...details.progress.activity];
-              agent.activityCount = details.progress.activityCount;
-              agent.result = details.progress.result;
-              agent.error = details.progress.error;
-              agent.usage = details.progress.usage;
-              agent.status = details.progress.status;
-              emit();
-            }
-          },
-          onUsage: (usage) => options.updateStatus(ctx, childId, usage),
-          excludeTools: CHILD_EXCLUDED_TOOLS,
-          appendInstructions,
-          customTools,
-          sessionId: binding?.sessionId,
-          persistSession: Boolean(call.sessionKey),
-          outputSchema: externalOutputSchema ? call.schema : undefined,
-        });
-        const spawnedDetails = result.details as SubagentToolDetails;
-        if (call.sessionKey && spawnedDetails.sessionId) {
-          call.sessionId = spawnedDetails.sessionId;
-          sessionBindings.set(call.sessionKey, {
-            key: call.sessionKey,
-            sessionId: spawnedDetails.sessionId,
-            subagentType: call.subagentType,
-            backend: profile.backend,
-          });
-        }
-        const resultDetails = result.details as SubagentToolDetails;
-        const agent = snapshot.agents.find((item) => item.index === childIndex);
-        if (agent) {
-          const progress = resultDetails.progress;
-          agent.status = resultDetails.status;
-          agent.result = resultDetails.result;
-          agent.error = resultDetails.error;
-          agent.usage = resultDetails.usage;
-          agent.sessionKey = call.sessionKey;
+      const runner = createWorkflowAgentRunner({
+        profiles,
+        ctx,
+        thinkingLevel: options.getThinkingLevel(),
+        timeoutMs: options.getSubagentTimeoutMs(),
+        toolCallId,
+        onUsage: (index, usage) => options.updateStatus(ctx, `${toolCallId}:agent:${index}`, usage),
+        onProgress: (childIndex, details) => {
+          const agent = snapshot.agents.find((item) => item.index === childIndex);
+          if (!agent) return;
+          const progress = details.progress;
+          agent.status = details.status;
+          agent.result = details.result;
+          agent.error = details.error;
+          agent.usage = details.usage ?? progress?.usage;
           if (progress) {
             agent.startedAt = progress.startedAt;
             agent.endedAt = progress.endedAt;
@@ -241,25 +147,8 @@ export function createWorkflowTool(
             agent.activityCount = progress.activityCount;
           }
           emit();
-        }
-        if (resultDetails.status !== "done") {
-          throw new Error(resultDetails.error ?? "subagent failed");
-        }
-        if (externalOutputSchema) {
-          try {
-            return JSON.parse(resultDetails.result ?? "null");
-          } catch {
-            throw new Error("external subagent structured output was not valid JSON");
-          }
-        }
-        if (capture) {
-          if (!capture.called) {
-            throw new Error("subagent finished without calling structured_output");
-          }
-          return capture.value;
-        }
-        return resultDetails.result ?? "";
-      };
+        },
+      });
 
       // Spinner animation is driven here, by the runtime, not by a UI-render
       // timer: while any agent is running we advance a frame counter and re-emit
@@ -281,8 +170,8 @@ export function createWorkflowTool(
           cwd: ctx.cwd,
           signal,
           limiter: options.getLimiter(),
-          serializeAgent: (sessionKey, task) => sessionKeyLocks.run(sessionKey, task),
-          runAgent,
+          serializeAgent: runner.serializeAgent,
+          runAgent: runner.runAgent,
           resumeAgentResults,
           onLog: (message) => {
             snapshot.logs.push(message);
@@ -349,19 +238,7 @@ export function createWorkflowTool(
             emit();
           },
           onAgentResult: async (event) => {
-            if (
-              event.sessionKey &&
-              event.sessionId &&
-              event.subagentType &&
-              (event.backend === "pi" || event.backend === "codex" || event.backend === "claude")
-            ) {
-              sessionBindings.set(event.sessionKey, {
-                key: event.sessionKey,
-                sessionId: event.sessionId,
-                subagentType: event.subagentType,
-                backend: event.backend,
-              });
-            }
+            runner.restoreSessionBinding(event);
             await journalWriter?.appendAgentResult(event);
           },
         });
