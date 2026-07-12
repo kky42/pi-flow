@@ -12,11 +12,10 @@ import {
 import {
   fauxAssistantMessage,
   fauxToolCall,
-  registerFauxProvider,
   type Context,
   type Model,
   type SimpleStreamOptions,
-} from "../node_modules/@earendil-works/pi-coding-agent/node_modules/@earendil-works/pi-ai/dist/index.js";
+} from "@earendil-works/pi-ai";
 import { describe, expect, it, vi } from "vitest";
 import { createSubagentExtension } from "../src/pi-subagent.ts";
 import { getSubagentProfiles, loadBuiltinSubagentProfiles } from "../src/profiles.ts";

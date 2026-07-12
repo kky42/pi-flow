@@ -12,11 +12,10 @@ import {
 import {
   fauxAssistantMessage,
   fauxToolCall,
-  registerFauxProvider,
   type Context,
   type Model,
   type SimpleStreamOptions,
-} from "../node_modules/@earendil-works/pi-coding-agent/node_modules/@earendil-works/pi-ai/dist/index.js";
+} from "@earendil-works/pi-ai";
 import { describe, expect, it, vi } from "vitest";
 import { createSubagentExtension } from "../src/pi-subagent.ts";
 import { getSubagentProfiles, loadBuiltinSubagentProfiles } from "../src/profiles.ts";
@@ -110,7 +109,7 @@ describe("pi-subagent codex backend", () => {
     expect(estimateCodexCostUsd("gpt-5.6-sol", {
       ...usage,
       inputTokens: 272_001,
-    })).toBeUndefined();
+    })).toBeCloseTo(1.3606);
     expect(estimateCodexCostUsd("unknown-model", usage)).toBeUndefined();
     expect(codexUsageToSubagentUsage("unknown-model", usage)).toMatchObject({
       input: 800,
@@ -434,6 +433,62 @@ process.stdout.write('x'.repeat(${MAX_STDOUT_LINE_CHARS + 1024}), () => {
     expect(result.details.status).toBe("error");
     expect(result.details.error).toContain("codex emitted a stdout line over");
     expect(result.details.error).toContain("without a newline");
+  });
+
+  it("renders priced Codex usage above 272K in the Agent status line", async () => {
+    const subagentsDir = join(agentDir, "subagents");
+    const binDir = join(tempDir, "bin-tiered-cost");
+    mkdirSync(subagentsDir, { recursive: true });
+    mkdirSync(binDir, { recursive: true });
+    writeFileSync(join(subagentsDir, "codex-tiered.md"), `---
+description: Uses tiered Codex pricing.
+backend: codex
+model: gpt-5.6-sol
+---
+`);
+    const fakeCodexPath = join(binDir, "codex");
+    writeFileSync(fakeCodexPath, `#!/usr/bin/env node
+for await (const _chunk of process.stdin) {}
+console.log(JSON.stringify({ type: 'thread.started', thread_id: 'codex-tiered-session' }));
+console.log(JSON.stringify({ type: 'item.completed', item: { type: 'agent_message', text: 'tiered model done' } }));
+console.log(JSON.stringify({ type: 'turn.completed', usage: { input_tokens: 272001, cached_input_tokens: 200, output_tokens: 50 } }));
+`);
+    chmodSync(fakeCodexPath, 0o755);
+    process.env.PATH = `${binDir}:${originalPathEnv ?? ""}`;
+
+    const { session, model, modelRegistry } = await createSession();
+    const tool = session.getToolDefinition("Agent") as any;
+    const statuses: Array<{ key: string; text: string | undefined }> = [];
+    const result = await tool.execute(
+      "codex-tiered-cost",
+      {
+        description: "Tiered cost",
+        subagent_type: "codex-tiered",
+        prompt: "Do it.",
+      },
+      undefined,
+      undefined,
+      makeExecutionContext({
+        hasUI: true,
+        model,
+        modelRegistry,
+        onStatus: (key, text) => statuses.push({ key, text }),
+      }),
+    );
+
+    expect(result.details.usage).toMatchObject({
+      input: 271_801,
+      cacheRead: 200,
+      output: 50,
+      cost: expect.closeTo(2.72046),
+      costKnown: true,
+      costEstimated: true,
+    });
+    const final = statuses.filter((status) => status.key === "pi-flow").at(-1)?.text ?? "";
+    expect(final).toContain("$2.720");
+    expect(final).not.toContain("$?");
+
+    disposeSession(session);
   });
 
   it("marks unknown codex model cost in the status line", async () => {

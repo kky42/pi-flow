@@ -12,19 +12,23 @@ import {
   Theme,
 } from "@earendil-works/pi-coding-agent";
 import {
+  createModels,
   fauxAssistantMessage,
+  fauxProvider,
   fauxToolCall,
-  registerFauxProvider,
   type Context,
+  type FauxProviderHandle,
   type Model,
+  type MutableModels,
   type SimpleStreamOptions,
-} from "../../node_modules/@earendil-works/pi-coding-agent/node_modules/@earendil-works/pi-ai/dist/index.js";
+} from "@earendil-works/pi-ai";
 import { afterEach, beforeEach } from "vitest";
 import { createSubagentExtension } from "../../src/pi-subagent.ts";
 
 export const packageRoot = dirname(dirname(dirname(fileURLToPath(import.meta.url))));
 
 export type FauxModelDef = { id: string; name: string; reasoning: boolean };
+export type TestFauxProvider = FauxProviderHandle & { unregister: () => void };
 type ThinkingLevel = "off" | "minimal" | "low" | "medium" | "high" | "xhigh";
 type CreateSessionOptions = {
   maxConcurrentSubagents?: number;
@@ -46,6 +50,25 @@ export type HarnessState = {
 };
 
 const DEFAULT_MODEL_DEFS: FauxModelDef[] = [{ id: "faux-thinker", name: "Faux Thinker", reasoning: true }];
+
+/** Connect Pi AI's explicit faux provider/Models APIs to coding-agent's registry bridge. */
+export function installFauxProvider(
+  modelRegistry: ModelRegistry,
+  faux: FauxProviderHandle,
+): TestFauxProvider {
+  const models: MutableModels = createModels();
+  models.setProvider(faux.provider);
+  modelRegistry.registerProvider(faux.provider.id, {
+    api: faux.api,
+    streamSimple: (model, context, streamOptions) => models.streamSimple(model, context, streamOptions),
+  });
+  return Object.assign(faux, {
+    unregister: () => {
+      modelRegistry.unregisterProvider(faux.provider.id);
+      models.deleteProvider(faux.provider.id);
+    },
+  });
+}
 
 export function setupPiSubagentTestHarness(onSetup?: (state: HarnessState) => void) {
   let tempDir = "";
@@ -146,16 +169,16 @@ export function setupPiSubagentTestHarness(onSetup?: (state: HarnessState) => vo
       defaultModelId,
       thinkingLevel = "high",
     } = options;
-    const registration = registerFauxProvider({ models: modelDefs });
-    registrations.push(registration);
-
-    const models = modelDefs.map((def) => registration.getModel(def.id) as Model<string>);
-    const model = defaultModelId ? (registration.getModel(defaultModelId) as Model<string>) : models[0];
+    const faux = fauxProvider({ models: modelDefs });
+    const models = modelDefs.map((def) => faux.getModel(def.id) as Model<string>);
+    const model = defaultModelId ? (faux.getModel(defaultModelId) as Model<string>) : models[0];
 
     const authStorage = AuthStorage.create(join(agentDir, "auth.json"));
     authStorage.setRuntimeApiKey(model.provider, "test-api-key");
     writeModelsJson(models);
     const modelRegistry = ModelRegistry.create(authStorage, join(agentDir, "models.json"));
+    const registration = installFauxProvider(modelRegistry, faux);
+    registrations.push(registration);
     const settingsManager = SettingsManager.inMemory({});
     const sessionManager = SessionManager.inMemory(cwd);
     const extensionOptions = {
@@ -202,7 +225,7 @@ export function setupPiSubagentTestHarness(onSetup?: (state: HarnessState) => vo
   // stream options, model, and the root's post-delegation continuation context.
   async function delegateOnce(
     session: { prompt: (input: string) => Promise<unknown> },
-    registration: ReturnType<typeof registerFauxProvider>,
+    registration: FauxProviderHandle,
     toolArgs: Record<string, unknown>,
     opts: { childReply?: string; rootReply?: string; userPrompt?: string } = {},
   ) {
@@ -231,9 +254,9 @@ export function setupPiSubagentTestHarness(onSetup?: (state: HarnessState) => vo
   }
 
   function makeMockTheme() {
-    const theme = new Theme({} as never, {} as never, "truecolor");
-    (theme as unknown as { fg: (color: string, text: string) => string }).fg = (_color, text) => text;
-    (theme as unknown as { bold: (text: string) => string }).bold = (text) => text;
+    const theme = Object.create(Theme.prototype) as Theme;
+    theme.fg = (_color, text) => text;
+    theme.bold = (text) => text;
     return theme;
   }
 

@@ -11,18 +11,18 @@ import {
 } from "@earendil-works/pi-coding-agent";
 import {
   fauxAssistantMessage,
+  fauxProvider,
   fauxToolCall,
-  registerFauxProvider,
   type Context,
   type Model,
   type SimpleStreamOptions,
-} from "../node_modules/@earendil-works/pi-coding-agent/node_modules/@earendil-works/pi-ai/dist/index.js";
+} from "@earendil-works/pi-ai";
 import { describe, expect, it, vi } from "vitest";
 import { createSubagentExtension } from "../src/pi-subagent.ts";
 import { getSubagentProfiles, loadBuiltinSubagentProfiles } from "../src/profiles.ts";
 import { buildClaudeArgs, claudeUsageToSubagentUsage, extractClaudeCostUsd, extractClaudeError, extractClaudeFinalText, extractClaudeUsage, spawnClaudeSubagent } from "../src/core/claude.ts";
 import { buildCodexArgs, codexUsageToSubagentUsage, estimateCodexCostUsd, extractCodexFinalText, spawnCodexSubagent } from "../src/core/codex.ts";
-import { packageRoot, setupPiSubagentTestHarness } from "./helpers/pi-subagent-harness.ts";
+import { installFauxProvider, packageRoot, setupPiSubagentTestHarness } from "./helpers/pi-subagent-harness.ts";
 
 describe("pi-subagent agent contract", () => {
   let tempDir = "";
@@ -168,15 +168,15 @@ describe("pi-subagent agent contract", () => {
 
 
   it("registers the Agent tool when loaded via additionalExtensionPaths", async () => {
-    const registration = registerFauxProvider({
+    const faux = fauxProvider({
       models: [{ id: "faux-thinker", name: "Faux Thinker", reasoning: true }],
     });
-    registrations.push(registration);
-
-    const model = registration.getModel("faux-thinker") as Model<string>;
+    const model = faux.getModel("faux-thinker") as Model<string>;
     const authStorage = AuthStorage.create(join(agentDir, "auth.json"));
     authStorage.setRuntimeApiKey(model.provider, "test-api-key");
     const modelRegistry = ModelRegistry.create(authStorage, join(agentDir, "models.json"));
+    const registration = installFauxProvider(modelRegistry, faux);
+    registrations.push(registration);
     const settingsManager = SettingsManager.inMemory({});
     const sessionManager = SessionManager.inMemory(cwd);
     const resourceLoader = new DefaultResourceLoader({

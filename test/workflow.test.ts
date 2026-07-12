@@ -34,9 +34,9 @@ async function waitUntil(predicate: () => boolean, timeoutMs = 250): Promise<voi
 }
 
 function makeMockTheme(): Theme {
-  const theme = new Theme({} as never, {} as never, "truecolor");
-  (theme as unknown as { fg: (color: string, text: string) => string }).fg = (_color, text) => text;
-  (theme as unknown as { bold: (text: string) => string }).bold = (text) => text;
+  const theme = Object.create(Theme.prototype) as Theme;
+  theme.fg = (_color, text) => text;
+  theme.bold = (text) => text;
   return theme;
 }
 

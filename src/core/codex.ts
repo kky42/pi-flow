@@ -2,7 +2,8 @@ import { spawn, type ChildProcess } from "node:child_process";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
+import { calculateCost, type Model, type Usage } from "@earendil-works/pi-ai";
+import type { ExtensionContext, ModelRegistry } from "@earendil-works/pi-coding-agent";
 import {
   createProgressEmitter,
   textResult,
@@ -43,13 +44,6 @@ export const CODEX_MODEL_PRICES_USD_PER_MILLION: Record<string, CodexModelPrice>
   "gpt-5.4-mini": { input: 0.25, cachedInput: 0.025, output: 2 },
 };
 
-const CODEX_LONG_CONTEXT_THRESHOLD = 272_000;
-const CODEX_LONG_CONTEXT_PRICING_MODELS = new Set([
-  "gpt-5.6-sol",
-  "gpt-5.6-terra",
-  "gpt-5.6-luna",
-]);
-
 function asRecord(value: unknown): Record<string, unknown> | undefined {
   return value !== null && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : undefined;
 }
@@ -72,35 +66,66 @@ export function normalizeCodexPriceModel(model: string | undefined): string | un
   return slash === -1 ? normalized : normalized.slice(slash + 1);
 }
 
+function calculateModelCostUsd(pricingModel: Model<string>, usage: CodexTokenUsage): number {
+  const totalInputTokens = Math.max(0, usage.inputTokens);
+  const cachedInputTokens = Math.min(totalInputTokens, Math.max(0, usage.cachedInputTokens));
+  const outputTokens = Math.max(0, usage.outputTokens);
+  const piUsage: Usage = {
+    input: totalInputTokens - cachedInputTokens,
+    output: outputTokens,
+    cacheRead: cachedInputTokens,
+    cacheWrite: 0,
+    totalTokens: totalInputTokens + outputTokens,
+    cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+  };
+  return calculateCost(pricingModel, piUsage).total;
+}
+
 export function estimateCodexCostUsd(model: string | undefined, usage: CodexTokenUsage): number | undefined {
-  const priceModel = normalizeCodexPriceModel(model);
-  const price = priceModel ? CODEX_MODEL_PRICES_USD_PER_MILLION[priceModel] : undefined;
+  const modelId = normalizeCodexPriceModel(model);
+  const price = modelId ? CODEX_MODEL_PRICES_USD_PER_MILLION[modelId] : undefined;
   if (!price) {
     return undefined;
   }
-  // GPT-5.6 applies different rates when an individual prompt exceeds 272K.
-  // Codex reports aggregate run usage, so a larger total cannot be priced safely.
-  if (
-    priceModel &&
-    CODEX_LONG_CONTEXT_PRICING_MODELS.has(priceModel) &&
-    usage.inputTokens > CODEX_LONG_CONTEXT_THRESHOLD
-  ) {
-    return undefined;
-  }
-  const cachedInputTokens = Math.max(0, usage.cachedInputTokens);
-  const uncachedInputTokens = Math.max(0, usage.inputTokens - cachedInputTokens);
-  const outputTokens = Math.max(0, usage.outputTokens);
+  const totalInputTokens = Math.max(0, usage.inputTokens);
+  const cachedInputTokens = Math.min(totalInputTokens, Math.max(0, usage.cachedInputTokens));
+  const uncachedInputTokens = totalInputTokens - cachedInputTokens;
   return (
     (uncachedInputTokens * price.input) +
     (cachedInputTokens * price.cachedInput) +
-    (outputTokens * price.output)
+    (Math.max(0, usage.outputTokens) * price.output)
   ) / 1_000_000;
 }
 
-export function codexUsageToSubagentUsage(model: string | undefined, usage: CodexTokenUsage): SubagentUsage {
-  const cachedInputTokens = Math.max(0, usage.cachedInputTokens);
-  const uncachedInputTokens = Math.max(0, usage.inputTokens - cachedInputTokens);
-  const cost = estimateCodexCostUsd(model, usage);
+function calculateRegistryCodexCostUsd(
+  model: string | undefined,
+  usage: CodexTokenUsage,
+  modelRegistry: ModelRegistry | undefined,
+): number | undefined {
+  const normalized = model?.trim();
+  if (!normalized || !modelRegistry) {
+    return undefined;
+  }
+  const separator = normalized.indexOf("/");
+  const provider = separator === -1 ? "openai-codex" : normalized.slice(0, separator);
+  const modelId = separator === -1 ? normalized : normalized.slice(separator + 1);
+  const pricingModel = modelRegistry.find(provider, modelId);
+  if (!pricingModel) {
+    return undefined;
+  }
+
+  return calculateModelCostUsd(pricingModel, usage);
+}
+
+export function codexUsageToSubagentUsage(
+  model: string | undefined,
+  usage: CodexTokenUsage,
+  modelRegistry?: ModelRegistry,
+): SubagentUsage {
+  const totalInputTokens = Math.max(0, usage.inputTokens);
+  const cachedInputTokens = Math.min(totalInputTokens, Math.max(0, usage.cachedInputTokens));
+  const uncachedInputTokens = totalInputTokens - cachedInputTokens;
+  const cost = calculateRegistryCodexCostUsd(model, usage, modelRegistry) ?? estimateCodexCostUsd(model, usage);
   const promptTokens = uncachedInputTokens + cachedInputTokens;
   return {
     input: uncachedInputTokens,
@@ -368,13 +393,13 @@ export function codexActivityFromEvent(event: Record<string, unknown>): string |
   return error ? error : undefined;
 }
 
-function emptyUsage(model: string | undefined): SubagentUsage {
+function emptyUsage(model: string | undefined, modelRegistry: ModelRegistry | undefined): SubagentUsage {
   return codexUsageToSubagentUsage(model, {
     inputTokens: 0,
     cachedInputTokens: 0,
     outputTokens: 0,
     reasoningOutputTokens: 0,
-  });
+  }, modelRegistry);
 }
 
 function hasChildExited(child: ChildProcess): boolean {
@@ -448,7 +473,7 @@ export async function spawnCodexSubagent(params: {
     onProgress: params.onProgress,
   });
   const progress = emitter.progress;
-  let latestUsage = emptyUsage(params.profile.model);
+  let latestUsage = emptyUsage(params.profile.model, params.ctx.modelRegistry);
   const usageTracker: CodexUsageTrackerState = { terminalUsageSeen: false };
   let resultText = "";
   let sessionId = params.sessionId?.trim() || undefined;
@@ -476,7 +501,7 @@ export async function spawnCodexSubagent(params: {
     }
     const usage = extractCodexRunUsage(event, usageTracker);
     if (usage) {
-      latestUsage = codexUsageToSubagentUsage(params.profile.model, usage);
+      latestUsage = codexUsageToSubagentUsage(params.profile.model, usage, params.ctx.modelRegistry);
       if (progress) {
         progress.usage = latestUsage;
       }
