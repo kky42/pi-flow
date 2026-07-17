@@ -32,14 +32,19 @@ export const CHILD_EXCLUDED_TOOLS: readonly string[] = ["Agent", "workflow"];
 const PI_SUBAGENT_SESSION_DIR_NAME = "subagent-sessions";
 
 export function incrementalPiUsage(current: SubagentUsage, baseline: SubagentUsage): SubagentUsage {
+  const input = Math.max(0, current.input - baseline.input);
+  const output = Math.max(0, current.output - baseline.output);
+  const cacheRead = Math.max(0, current.cacheRead - baseline.cacheRead);
+  const cacheWrite = Math.max(0, current.cacheWrite - baseline.cacheWrite);
+  const promptTokens = input + cacheRead + cacheWrite;
   return {
-    input: Math.max(0, current.input - baseline.input),
-    output: Math.max(0, current.output - baseline.output),
-    cacheRead: Math.max(0, current.cacheRead - baseline.cacheRead),
-    cacheWrite: Math.max(0, current.cacheWrite - baseline.cacheWrite),
+    input,
+    output,
+    cacheRead,
+    cacheWrite,
     cost: Math.max(0, current.cost - baseline.cost),
     costKnown: current.costKnown,
-    latestCacheHitRate: current.latestCacheHitRate,
+    latestCacheHitRate: promptTokens > 0 ? (cacheRead / promptTokens) * 100 : undefined,
   };
 }
 

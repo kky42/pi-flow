@@ -43,11 +43,19 @@ beforeEach(() => {
 });
 
 describe("canonical workflow agent runner", () => {
-  it("reports only per-call Pi usage for a resumed session", () => {
+  it("reports cumulative cache hit rate for only the current resumed Pi call", () => {
     expect(incrementalPiUsage(
       { input: 140, output: 25, cacheRead: 60, cacheWrite: 4, cost: 0.9, costKnown: true, latestCacheHitRate: 30 },
       { input: 100, output: 20, cacheRead: 50, cacheWrite: 1, cost: 0.7, costKnown: true },
-    )).toEqual({ input: 40, output: 5, cacheRead: 10, cacheWrite: 3, cost: expect.closeTo(0.2), costKnown: true, latestCacheHitRate: 30 });
+    )).toEqual({
+      input: 40,
+      output: 5,
+      cacheRead: 10,
+      cacheWrite: 3,
+      cost: expect.closeTo(0.2),
+      costKnown: true,
+      latestCacheHitRate: expect.closeTo(18.8679),
+    });
   });
 
   it("restores cached session_key bindings before the next live call", async () => {

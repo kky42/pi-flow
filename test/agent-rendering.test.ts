@@ -247,7 +247,7 @@ description: Searches code without editing files.
       const text = renderToText(captured.renderResult(result, {}, theme, {}));
 
       expect(text).toContain("Pi Agent(code-searcher: Research repo)");
-      expect(text).toContain("2s ↑81k ↓4.9k R602k CH94.7% $0.850");
+      expect(text).toContain("2s ↑81k ↓4.9k R602k CH88.1% $0.850");
       expect(text).toContain("... +2 earlier events");
       expect(text).toContain("Read src/types.ts");
       expect(text).toContain("Read app.py");

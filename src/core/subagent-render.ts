@@ -70,8 +70,9 @@ export function formatUsage(usage: SubagentUsage): string {
   if (usage.cacheWrite) {
     parts.push(`W${formatTokens(usage.cacheWrite)}`);
   }
-  if (usage.latestCacheHitRate !== undefined) {
-    parts.push(`CH${usage.latestCacheHitRate.toFixed(1)}%`);
+  const promptTokens = usage.input + usage.cacheRead + usage.cacheWrite;
+  if (promptTokens > 0) {
+    parts.push(`CH${((usage.cacheRead / promptTokens) * 100).toFixed(1)}%`);
   }
   if (usage.cost) {
     parts.push(`$${usage.cost.toFixed(3)}${usage.costKnown === false ? "+?" : ""}`);
