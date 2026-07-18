@@ -135,7 +135,7 @@ export function codexUsageToSubagentUsage(
     cost: cost ?? 0,
     costKnown: cost !== undefined,
     costEstimated: cost !== undefined,
-    latestCacheHitRate: promptTokens > 0 ? (cachedInputTokens / promptTokens) * 100 : undefined,
+    cacheHitRate: promptTokens > 0 ? (cachedInputTokens / promptTokens) * 100 : undefined,
   };
 }
 

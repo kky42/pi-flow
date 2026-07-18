@@ -44,7 +44,7 @@ export function incrementalPiUsage(current: SubagentUsage, baseline: SubagentUsa
     cacheWrite,
     cost: Math.max(0, current.cost - baseline.cost),
     costKnown: current.costKnown,
-    latestCacheHitRate: promptTokens > 0 ? (cacheRead / promptTokens) * 100 : undefined,
+    cacheHitRate: promptTokens > 0 ? (cacheRead / promptTokens) * 100 : undefined,
   };
 }
 

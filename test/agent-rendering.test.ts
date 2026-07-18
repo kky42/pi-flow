@@ -57,7 +57,7 @@ describe("pi-subagent rendering", () => {
       cacheWrite: 0,
       cost: 0,
       costKnown: false,
-      latestCacheHitRate: 0,
+      cacheHitRate: 0,
     })).toBe("↑1.0k ↓0 CH0.0% $?");
   });
 
@@ -237,7 +237,7 @@ description: Searches code without editing files.
               output: 4_900,
               cacheRead: 602_000,
               cacheWrite: 0,
-              latestCacheHitRate: 94.666,
+              cacheHitRate: 94.666,
               cost: 0.85,
             },
           },

@@ -87,7 +87,7 @@ const run = await executeWorkflow({
 });
 ```
 
-The headless API loads the same profiles and preserves profile backend, model, thinking, tools, role prompt, `session_key`, structured output, and spawn behavior used by the interactive workflow tool. `allowedBackends` is an optional execution policy. Workflow scripts are trusted code, not a security sandbox.
+The headless API loads the same profiles and preserves profile backend, model, thinking, tools, role prompt, `session_key`, structured output, and spawn behavior used by the interactive workflow tool. `run.usage.cacheHitRate` is the weighted cache-read share across all prompt tokens reported by agents in that workflow run, not the last model turn's rate. `allowedBackends` is an optional execution policy. Workflow scripts are trusted code, not a security sandbox.
 
 The lower-level `@kky42/pi-flow/runtime` export remains available for consumers that provide their own agent runner.
 

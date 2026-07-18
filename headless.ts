@@ -53,7 +53,7 @@ export async function executeWorkflow<T = unknown>(options: HeadlessWorkflowOpti
     usage.costKnown = values.every((item) => item.costKnown !== false);
     usage.costEstimated = values.some((item) => item.costEstimated === true);
     const promptTokens = usage.input + usage.cacheRead + usage.cacheWrite;
-    usage.latestCacheHitRate = promptTokens > 0 ? (usage.cacheRead / promptTokens) * 100 : undefined;
+    usage.cacheHitRate = promptTokens > 0 ? (usage.cacheRead / promptTokens) * 100 : undefined;
     options.onUsage?.({ ...usage });
   };
   const controller = new AbortController();

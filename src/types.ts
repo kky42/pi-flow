@@ -90,7 +90,8 @@ export interface SubagentUsage {
   costKnown?: boolean;
   /** True when cost was estimated locally from token usage instead of reported by the backend. */
   costEstimated?: boolean;
-  latestCacheHitRate?: number;
+  /** Cache-read share across all prompt tokens represented by this cumulative usage snapshot. */
+  cacheHitRate?: number;
 }
 
 export interface SubagentProgressNode {

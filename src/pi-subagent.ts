@@ -247,7 +247,7 @@ function getUsageTotals(state: SubagentUsageStatusState): SubagentUsage {
     }
   }
   const promptTokens = totals.input + totals.cacheRead + totals.cacheWrite;
-  totals.latestCacheHitRate = promptTokens > 0 ? (totals.cacheRead / promptTokens) * 100 : undefined;
+  totals.cacheHitRate = promptTokens > 0 ? (totals.cacheRead / promptTokens) * 100 : undefined;
   return totals;
 }
 

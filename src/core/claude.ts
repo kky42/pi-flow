@@ -200,7 +200,7 @@ export function claudeUsageToSubagentUsage(usage: ClaudeTokenUsage, costUsd: num
     cost: costKnown ? costUsd ?? 0 : 0,
     costKnown,
     costEstimated: false,
-    latestCacheHitRate: promptTokens > 0 ? (cacheRead / promptTokens) * 100 : undefined,
+    cacheHitRate: promptTokens > 0 ? (cacheRead / promptTokens) * 100 : undefined,
   };
 }
 

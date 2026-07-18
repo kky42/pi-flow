@@ -25,6 +25,7 @@ vi.mock("../src/profiles.ts", () => ({
   ]),
 }));
 
+import { getSubagentUsage } from "../src/core/progress.ts";
 import { incrementalPiUsage } from "../src/core/spawn.ts";
 import { createWorkflowAgentRunner } from "../src/workflow/agent-runner.ts";
 import { executeWorkflow } from "../headless.ts";
@@ -43,9 +44,18 @@ beforeEach(() => {
 });
 
 describe("canonical workflow agent runner", () => {
+  it("reports aggregate cache hit rate from cumulative Pi session stats", () => {
+    expect(getSubagentUsage({
+      getSessionStats: () => ({
+        tokens: { input: 100, output: 10, cacheRead: 50, cacheWrite: 50 },
+        cost: 0.2,
+      }),
+    })).toMatchObject({ cacheHitRate: 25 });
+  });
+
   it("reports cumulative cache hit rate for only the current resumed Pi call", () => {
     expect(incrementalPiUsage(
-      { input: 140, output: 25, cacheRead: 60, cacheWrite: 4, cost: 0.9, costKnown: true, latestCacheHitRate: 30 },
+      { input: 140, output: 25, cacheRead: 60, cacheWrite: 4, cost: 0.9, costKnown: true, cacheHitRate: 30 },
       { input: 100, output: 20, cacheRead: 50, cacheWrite: 1, cost: 0.7, costKnown: true },
     )).toEqual({
       input: 40,
@@ -54,7 +64,7 @@ describe("canonical workflow agent runner", () => {
       cacheWrite: 3,
       cost: expect.closeTo(0.2),
       costKnown: true,
-      latestCacheHitRate: expect.closeTo(18.8679),
+      cacheHitRate: expect.closeTo(18.8679),
     });
   });
 
@@ -140,7 +150,7 @@ describe("headless workflow", () => {
       cwd: process.cwd(),
       script: `export const meta = { name: "cache", description: "test" };\nreturn await parallel([() => agent("a", { label: "one", subagent_type: "reviewer" }), () => agent("b", { label: "two", subagent_type: "reviewer" })]);`,
     });
-    expect(result.usage).toMatchObject({ input: 150, cacheRead: 50, latestCacheHitRate: 25 });
+    expect(result.usage).toMatchObject({ input: 150, cacheRead: 50, cacheHitRate: 25 });
   });
 
   it("runs without an ExtensionContext or UI and reports cumulative usage", async () => {
@@ -150,7 +160,7 @@ describe("headless workflow", () => {
       script: `export const meta = { name: "headless", description: "test" };\nreturn await agent("inspect", { subagent_type: "reviewer" });`,
     });
     expect(result.result).toBe("ok");
-    expect(result.usage).toMatchObject({ input: 2, output: 3, childAgents: 1, latestCacheHitRate: 0 });
+    expect(result.usage).toMatchObject({ input: 2, output: 3, childAgents: 1, cacheHitRate: 0 });
     expect(usage.length).toBeGreaterThan(0);
   });
 });

@@ -339,7 +339,7 @@ console.log(JSON.stringify({ type: 'item.completed', item: { type: 'agent_messag
       input: 200,
       cacheRead: 300,
       output: 30,
-      latestCacheHitRate: 60,
+      cacheHitRate: 60,
     });
   });
 

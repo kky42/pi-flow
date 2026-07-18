@@ -254,7 +254,7 @@ function summarizePi(events) {
       cost: totals.cost,
       costKnown: totals.sawPositiveCost,
       costEstimated: false,
-      latestCacheHitRate: promptTokens > 0 ? totals.cacheRead / promptTokens * 100 : undefined,
+      cacheHitRate: promptTokens > 0 ? totals.cacheRead / promptTokens * 100 : undefined,
     }, "reported")
     : undefined;
   const observedModels = unique(assistantMessages.map((message) => {
@@ -287,7 +287,7 @@ function usageErrors(usage, usageDisplay) {
   const promptTokens = usage.input + usage.cacheRead + usage.cacheWrite;
   if (promptTokens <= 0) errors.push("input token telemetry missing");
   if (usage.output <= 0) errors.push("output token telemetry missing");
-  if (!Number.isFinite(usage.latestCacheHitRate)) errors.push("cache-hit telemetry missing");
+  if (!Number.isFinite(usage.cacheHitRate)) errors.push("cache-hit telemetry missing");
   if (!usageDisplay.includes("↑") || !usageDisplay.includes("↓") || !usageDisplay.includes("CH")) {
     errors.push("formatted usage telemetry incomplete");
   }
@@ -328,9 +328,9 @@ export function summarizeProbe({ row, events, durationMs, processResult }) {
     usage.input + usage.cacheRead + usage.cacheWrite > 0 &&
     usage.output > 0;
   const cacheHitRateValid = usage !== undefined &&
-    Number.isFinite(usage.latestCacheHitRate) &&
-    usage.latestCacheHitRate >= 0 &&
-    usage.latestCacheHitRate <= 100;
+    Number.isFinite(usage.cacheHitRate) &&
+    usage.cacheHitRate >= 0 &&
+    usage.cacheHitRate <= 100;
   const displayValid = usage !== undefined &&
     usageDisplay.includes("↑") &&
     usageDisplay.includes("↓") &&
@@ -371,7 +371,7 @@ export function summarizeProbe({ row, events, durationMs, processResult }) {
       cacheRead: usage.cacheRead,
       cacheWrite: usage.cacheWrite,
       totalTokens: usage.input + usage.output + usage.cacheRead + usage.cacheWrite,
-      cacheHitRate: usage.latestCacheHitRate,
+      cacheHitRate: usage.cacheHitRate,
       costUsd: usage.cost,
       costStatus: usage.costStatus,
     } : undefined,

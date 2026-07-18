@@ -407,10 +407,10 @@ describe("pi-subagent progress and status", () => {
       cacheRead: first.details.usage.cacheRead + second.details.usage.cacheRead,
       cacheWrite: first.details.usage.cacheWrite + second.details.usage.cacheWrite,
       cost: first.details.usage.cost + second.details.usage.cost,
-      latestCacheHitRate: undefined as number | undefined,
+      cacheHitRate: undefined as number | undefined,
     };
     const promptTokens = usage.input + usage.cacheRead + usage.cacheWrite;
-    usage.latestCacheHitRate = promptTokens > 0 ? (usage.cacheRead / promptTokens) * 100 : undefined;
+    usage.cacheHitRate = promptTokens > 0 ? (usage.cacheRead / promptTokens) * 100 : undefined;
     const expected = `pi-flow ↑${formatTestTokens(usage.input)} ↓${formatTestTokens(usage.output)}`;
 
     expect(statuses.some((status) => status.key === "pi-flow" && status.text)).toBe(true);
@@ -421,8 +421,8 @@ describe("pi-subagent progress and status", () => {
     if (usage.cacheWrite) {
       expect(final).toContain(`W${formatTestTokens(usage.cacheWrite)}`);
     }
-    if (usage.latestCacheHitRate !== undefined) {
-      expect(final).toContain(`CH${usage.latestCacheHitRate.toFixed(1)}%`);
+    if (usage.cacheHitRate !== undefined) {
+      expect(final).toContain(`CH${usage.cacheHitRate.toFixed(1)}%`);
     }
 
     disposeSession(session);

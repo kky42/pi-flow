@@ -321,32 +321,14 @@ export function getFinalAssistantFailure(
   return undefined;
 }
 
-export function extractLatestCacheHitRate(messages: readonly unknown[]): number | undefined {
-  for (let i = messages.length - 1; i >= 0; i--) {
-    const message = messages[i] as {
-      role?: string;
-      usage?: { input?: number; cacheRead?: number; cacheWrite?: number };
-    };
-    if (message.role !== "assistant" || !message.usage) {
-      continue;
-    }
-    const input = message.usage.input ?? 0;
-    const cacheRead = message.usage.cacheRead ?? 0;
-    const cacheWrite = message.usage.cacheWrite ?? 0;
-    const promptTokens = input + cacheRead + cacheWrite;
-    return promptTokens > 0 ? (cacheRead / promptTokens) * 100 : undefined;
-  }
-  return undefined;
-}
-
 export function getSubagentUsage(session: {
   getSessionStats: () => {
     tokens: { input: number; output: number; cacheRead: number; cacheWrite: number };
     cost: number;
   };
-  messages: readonly unknown[];
 }): SubagentUsage {
   const stats = session.getSessionStats();
+  const promptTokens = stats.tokens.input + stats.tokens.cacheRead + stats.tokens.cacheWrite;
   return {
     input: stats.tokens.input,
     output: stats.tokens.output,
@@ -354,6 +336,6 @@ export function getSubagentUsage(session: {
     cacheWrite: stats.tokens.cacheWrite,
     cost: stats.cost,
     costKnown: true,
-    latestCacheHitRate: extractLatestCacheHitRate(session.messages),
+    cacheHitRate: promptTokens > 0 ? (stats.tokens.cacheRead / promptTokens) * 100 : undefined,
   };
 }
