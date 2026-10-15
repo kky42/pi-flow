@@ -29,6 +29,30 @@ import { createSubagentExtension } from "../../src/pi-subagent.ts";
 
 export const packageRoot = dirname(dirname(dirname(fileURLToPath(import.meta.url))));
 
+/**
+ * pi >= 1.2 delivers the effective prompt to providers as transcript system
+ * messages (leading content plus named sections) instead of the pre-1.2
+ * `Context.systemPrompt` shorthand. Reconstruct the text either way so tests
+ * observe what the model actually sees.
+ */
+export function systemPromptFromProviderContext(context: Context | undefined): string {
+  if (!context) return "";
+  if (typeof context.systemPrompt === "string") return context.systemPrompt;
+  const parts: string[] = [];
+  for (const message of context.messages) {
+    if (message.role !== "system") continue;
+    parts.push(typeof message.content === "string"
+      ? message.content
+      : message.content.filter((block) => block.type === "text").map((block) => block.text).join(""));
+    if (message.sections) {
+      for (const section of Object.values(message.sections)) {
+        if (section !== null) parts.push(section);
+      }
+    }
+  }
+  return parts.join("\n\n");
+}
+
 export type FauxModelDef = { id: string; name: string; reasoning: boolean };
 export type TestFauxProvider = FauxProviderHandle & { unregister: () => void };
 export type TaskEnvelope = {
@@ -371,9 +395,16 @@ export function setupPiSubagentTestHarness(onSetup?: (state: HarnessState) => vo
   }
 
   function getToolNames(context: Context | undefined): string[] {
-    return [...new Set((context?.tools ?? [])
-      .map((tool: { name?: string } | undefined) => tool?.name)
-      .filter((name): name is string => typeof name === "string"))].sort();
+    // pi >= 1.2 carries tool declarations on transcript system messages
+    // (`toolsAdded`) instead of the pre-1.2 `Context.tools` shorthand.
+    const transcriptTools = (context?.messages ?? []).flatMap((message) =>
+      message.role === "system"
+        ? (message.toolsAdded ?? []).map((tool: { name?: string }) => tool?.name)
+        : []);
+    const names = context?.tools?.length
+      ? context.tools.map((tool: { name?: string } | undefined) => tool?.name)
+      : transcriptTools;
+    return [...new Set(names.filter((name): name is string => typeof name === "string"))].sort();
   }
 
   return {

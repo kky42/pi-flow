@@ -12,7 +12,7 @@ import { fauxAssistantMessage, fauxProvider, type Context, type Model } from "@e
 import { describe, expect, it } from "vitest";
 import { getSubagentProfiles } from "../src/profiles.ts";
 import { buildFlowPrompt } from "../src/prompts.ts";
-import { installFauxProvider, packageRoot, setupPiSubagentTestHarness } from "./helpers/pi-subagent-harness.ts";
+import { installFauxProvider, packageRoot, setupPiSubagentTestHarness, systemPromptFromProviderContext } from "./helpers/pi-subagent-harness.ts";
 
 function occurrenceCount(text: string, value: string): number {
   return text.split(value).length - 1;
@@ -48,7 +48,7 @@ describe("pi-subagent tool contract", () => {
 
     await session.prompt("Just say noted.");
     disposeSession(session);
-    return rootContext?.systemPrompt ?? "";
+    return systemPromptFromProviderContext(rootContext);
   }
 
   it("registers the run_agent API shape", async () => {

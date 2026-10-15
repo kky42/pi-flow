@@ -34,7 +34,7 @@ function hasTaskNotification(messages: readonly unknown[]): boolean {
 }
 
 describe("compaction while pi-flow tasks are active", () => {
-  const { createSession, setContextRoutingResponses, terminalEnvelope } = setupPiSubagentTestHarness();
+  const { createSession, setContextRoutingResponses, terminalEnvelope, getToolNames } = setupPiSubagentTestHarness();
 
   it("rejects manual compaction while a synchronous Tool call is active", async () => {
     const { session, registration, sessionManager } = await createSession({
@@ -52,7 +52,7 @@ describe("compaction while pi-flow tasks are active", () => {
 
     setContextRoutingResponses(registration, async (context) => {
       const text = contextText(context);
-      const isRoot = context.tools?.some((tool) => tool.name === "run_agent") === true;
+      const isRoot = getToolNames(context).includes("run_agent");
       if (!isRoot) {
         childStarted = true;
         await childGate.promise;

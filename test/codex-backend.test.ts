@@ -101,13 +101,15 @@ describe("pi-subagent codex backend", () => {
 
     const usage = { inputTokens: 1000, cachedInputTokens: 200, outputTokens: 50, reasoningOutputTokens: 0 };
     expect(estimateCodexCostUsd("openai/gpt-5.4-mini", usage)).toBeCloseTo(0.00084);
-    expect(estimateCodexCostUsd("gpt-5.6-sol", usage)).toBeCloseTo(0.0056);
+    expect(estimateCodexCostUsd("gpt-5.6-sol", usage)).toBeCloseTo(0.00428);
     expect(estimateCodexCostUsd("openai-codex/gpt-5.6-terra", usage)).toBeCloseTo(0.00224);
     expect(estimateCodexCostUsd("gpt-5.6-luna", usage)).toBeCloseTo(0.000224);
+    // pi >= 1.2 prices gpt-5.6-sol at $4/M input, $0.4/M cache read, $20/M output,
+    // with a tier above 272K input tokens ($8/$0.8/$30).
     expect(estimateCodexCostUsd("gpt-5.6-sol", {
       ...usage,
       inputTokens: 272_001,
-    })).toBeCloseTo(2.72046);
+    })).toBeCloseTo(2.176068);
     expect(estimateCodexCostUsd("unknown-model", usage)).toBeUndefined();
     expect(codexUsageToSubagentUsage("unknown-model", usage)).toMatchObject({
       input: 800,
@@ -515,7 +517,7 @@ console.log(JSON.stringify({ type: 'turn.completed', usage: { input_tokens: 2720
 
     const terminal = JSON.parse(result.content[0].text);
     expect(result.usage).toMatchObject({ input: 271801, cacheRead: 200, output: 50 });
-    expect(result.usage.cost.total).toBeCloseTo(2.720, 3);
+    expect(result.usage.cost.total).toBeCloseTo(2.176, 3);
     expect(terminal).toMatchObject({ status: "completed", content: "tiered model done" });
     expect(taskNotifications(session)).toEqual([]);
 

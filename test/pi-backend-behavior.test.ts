@@ -2,7 +2,7 @@ import { mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { fauxAssistantMessage, type Context, type Model, type SimpleStreamOptions } from "@earendil-works/pi-ai";
 import { describe, expect, it } from "vitest";
-import { setupPiSubagentTestHarness } from "./helpers/pi-subagent-harness.ts";
+import { setupPiSubagentTestHarness, systemPromptFromProviderContext } from "./helpers/pi-subagent-harness.ts";
 
 describe("pi-subagent pi backend behavior", () => {
   let cwd = "";
@@ -69,8 +69,9 @@ Custom Code Searcher Role`);
     expect(taskNotifications(session)).toEqual([]);
     expect(childModel?.id).toBe("faux-fast");
     expect((childOptions as { reasoning?: string } | undefined)?.reasoning).toBeUndefined();
-    expect(childContext?.systemPrompt).toContain("Custom Code Searcher Role");
-    expect(childContext?.systemPrompt).not.toContain("# PiFlow delegation");
+    const childPrompt = systemPromptFromProviderContext(childContext);
+    expect(childPrompt).toContain("Custom Code Searcher Role");
+    expect(childPrompt).not.toContain("# PiFlow delegation");
     expect(getToolNames(childContext)).toEqual(["bash", "find", "grep", "ls", "read"]);
     expect(JSON.stringify(childContext?.messages)).toContain("Search for the auth flow.");
     disposeSession(session);
@@ -93,8 +94,9 @@ Custom Code Searcher Role`);
       },
     );
 
-    expect(childContext?.systemPrompt).toContain("Project append marker.");
-    expect(childContext?.systemPrompt).not.toContain("# PiFlow delegation");
+    const appendedPrompt = systemPromptFromProviderContext(childContext);
+    expect(appendedPrompt).toContain("Project append marker.");
+    expect(appendedPrompt).not.toContain("# PiFlow delegation");
     expect(getToolNames(childContext)).not.toContain("run_agent");
     expect(getToolNames(childContext)).not.toContain("run_workflow");
     disposeSession(session);
